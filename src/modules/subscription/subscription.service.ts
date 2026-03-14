@@ -35,6 +35,7 @@ import { CheckHwidExistsQuery } from '@modules/hwid-user-devices/queries/check-h
 import { GetUserByUniqueFieldQuery } from '@modules/users/queries/get-user-by-unique-field';
 import { GetUserSubpageConfigQuery } from '@modules/users/queries/get-user-subpage-config';
 import { GetTemplateNameQuery } from '@modules/external-squads/queries/get-template-name';
+import { ExternalVlessService } from '@modules/external-vless/external-vless.service';
 import { ISRRContext } from '@modules/subscription-response-rules/interfaces';
 import { UserEntity } from '@modules/users/entities/user.entity';
 import { GetFullUserResponseModel } from '@modules/users/models';
@@ -67,6 +68,7 @@ export class SubscriptionService {
         private readonly renderTemplatesService: RenderTemplatesService,
         private readonly formatHostsService: FormatHostsService,
         private readonly xrayGeneratorService: XrayGeneratorService,
+        private readonly externalVlessService: ExternalVlessService,
         private readonly usersQueuesService: UsersQueuesService,
         private readonly srrMatcher: ResponseRulesMatcherService,
     ) {
@@ -226,6 +228,9 @@ export class SubscriptionService {
                 return new SubscriptionNotFoundResponse();
             }
 
+            const externalFormattedHosts =
+                await this.externalVlessService.getFormattedHostsForUser(user.response);
+
             if (subscriptionSettings.randomizeHosts) {
                 hosts.response = _.shuffle(hosts.response);
             }
@@ -240,6 +245,7 @@ export class SubscriptionService {
                 srrContext,
                 user: user.response,
                 hosts: hosts.response,
+                additionalFormattedHosts: externalFormattedHosts,
                 hostsOverrides,
             });
 
@@ -335,6 +341,9 @@ export class SubscriptionService {
                 return fail(ERRORS.GET_ALL_HOSTS_ERROR);
             }
 
+            const externalFormattedHosts =
+                await this.externalVlessService.getFormattedHostsForUser(user);
+
             if (settingEntity.randomizeHosts) {
                 hosts.response = _.shuffle(hosts.response);
             }
@@ -348,6 +357,7 @@ export class SubscriptionService {
                     subscriptionSettings: patchedSettingEntity,
                     user: user,
                     hosts: hosts.response,
+                    additionalFormattedHosts: externalFormattedHosts,
                     hostsOverrides: patchedHostsOverrides,
                 });
             }
@@ -1043,6 +1053,8 @@ export class SubscriptionService {
             );
 
             const allHosts = allHostsResult.isOk ? allHostsResult.response : [];
+            const externalFormattedHosts =
+                await this.externalVlessService.getFormattedHostsForUser(userEntity);
 
             const enabledHosts = allHosts.filter((h) => !h.isDisabled && !h.isHidden);
             const disabledHosts = allHosts.filter((h) => h.isDisabled && !h.isHidden);
@@ -1064,7 +1076,10 @@ export class SubscriptionService {
 
             return ok(
                 new ConnectionKeysResponseModel({
-                    enabledKeys: this.xrayGeneratorService.generateLinks(formattedEnabled, false),
+                    enabledKeys: this.xrayGeneratorService.generateLinks(
+                        [...formattedEnabled, ...externalFormattedHosts],
+                        false,
+                    ),
                     disabledKeys: this.xrayGeneratorService.generateLinks(formattedDisabled, false),
                     hiddenKeys: this.xrayGeneratorService.generateLinks(formattedHidden, false),
                 }),

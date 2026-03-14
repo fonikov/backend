@@ -15,7 +15,7 @@ import { XrayGeneratorService } from './generators/xray.generator.service';
 import { FormatHostsService } from './generators/format-hosts.service';
 import { SUBSCRIPTION_CONFIG_TYPES } from './constants/config-types';
 import { IGenerateSubscription } from './interfaces';
-import { IRawHost } from './generators/interfaces';
+import { IFormattedHost, IRawHost } from './generators/interfaces';
 
 @Injectable()
 export class RenderTemplatesService {
@@ -34,7 +34,8 @@ export class RenderTemplatesService {
         contentType: string;
         subscription: string;
     }> {
-        const { srrContext, user, hosts, hostsOverrides, fallbackOptions } = params;
+        const { srrContext, user, hosts, hostsOverrides, fallbackOptions, additionalFormattedHosts } =
+            params;
 
         const formattedHosts = await this.formatHostsService.generateFormattedHosts({
             subscriptionSettings: srrContext.subscriptionSettings,
@@ -43,12 +44,13 @@ export class RenderTemplatesService {
             hostsOverrides,
             fallbackOptions,
         });
+        const mergedHosts = [...formattedHosts, ...(additionalFormattedHosts || [])];
 
         switch (srrContext.matchedResponseType) {
             case 'XRAY_BASE64':
                 return {
                     subscription: await this.xrayGeneratorService.generateConfig(
-                        formattedHosts,
+                        mergedHosts,
                         SUBSCRIPTION_CONFIG_TYPES['XRAY_BASE64'].isBase64,
                         srrContext.isXrayExtSupported,
                     ),
@@ -58,7 +60,7 @@ export class RenderTemplatesService {
             case 'CLASH':
                 return {
                     subscription: await this.clashGeneratorService.generateConfig(
-                        formattedHosts,
+                        mergedHosts,
                         srrContext.overrideTemplateName,
                     ),
                     contentType: SUBSCRIPTION_CONFIG_TYPES['CLASH'].CONTENT_TYPE,
@@ -67,7 +69,7 @@ export class RenderTemplatesService {
             case 'MIHOMO':
                 return {
                     subscription: await this.mihomoGeneratorService.generateConfig(
-                        formattedHosts,
+                        mergedHosts,
                         false,
                         srrContext.isMihomoExtSupported,
                         srrContext.overrideTemplateName,
@@ -78,7 +80,7 @@ export class RenderTemplatesService {
             case 'SINGBOX':
                 return {
                     subscription: await this.singBoxGeneratorService.generateConfig(
-                        formattedHosts,
+                        mergedHosts,
                         srrContext.overrideTemplateName,
                     ),
                     contentType: SUBSCRIPTION_CONFIG_TYPES['SINGBOX'].CONTENT_TYPE,
@@ -87,7 +89,7 @@ export class RenderTemplatesService {
             case 'STASH':
                 return {
                     subscription: await this.mihomoGeneratorService.generateConfig(
-                        formattedHosts,
+                        mergedHosts,
                         true,
                         false,
                         srrContext.overrideTemplateName,
@@ -98,7 +100,7 @@ export class RenderTemplatesService {
             case 'XRAY_JSON':
                 return {
                     subscription: await this.xrayJsonGeneratorService.generateConfig({
-                        hosts: formattedHosts,
+                        hosts: mergedHosts,
                         isHapp: srrContext.isXrayExtSupported,
                         overrideTemplateName: srrContext.overrideTemplateName,
                         ignoreHostXrayJsonTemplate: srrContext.ignoreHostXrayJsonTemplate,
@@ -116,10 +118,11 @@ export class RenderTemplatesService {
         hosts: HostWithRawInbound[];
         hostsOverrides: ExternalSquadEntity['hostOverrides'] | undefined;
         subscriptionSettings: SubscriptionSettingsEntity;
+        additionalFormattedHosts?: IFormattedHost[];
     }): Promise<{
         rawHosts: IRawHost[];
     }> {
-        const { user, hosts, hostsOverrides, subscriptionSettings } = params;
+        const { user, hosts, hostsOverrides, subscriptionSettings, additionalFormattedHosts } = params;
 
         const formattedHosts = await this.formatHostsService.generateFormattedHosts({
             subscriptionSettings,
@@ -129,7 +132,10 @@ export class RenderTemplatesService {
             returnDbHost: true,
         });
 
-        const rawHosts = await this.rawHostsGeneratorService.generateConfig(formattedHosts);
+        const rawHosts = await this.rawHostsGeneratorService.generateConfig([
+            ...formattedHosts,
+            ...(additionalFormattedHosts || []),
+        ]);
 
         return {
             rawHosts,

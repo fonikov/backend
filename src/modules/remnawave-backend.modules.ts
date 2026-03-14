@@ -15,6 +15,7 @@ import { RemnawaveSettingsModule } from './remnawave-settings/remnawave-settings
 import { RemnawaveServiceModule } from './remnawave-service/remnawave-service.module';
 import { HwidUserDevicesModule } from './hwid-user-devices/hwid-user-devices.module';
 import { ExternalSquadModule } from './external-squads/external-squads.module';
+import { ExternalVlessModule } from './external-vless/external-vless.module';
 import { ConfigProfileModule } from './config-profiles/config-profile.module';
 import { InternalSquadModule } from './internal-squads/internal-squad.module';
 import { InfraBillingModule } from './infra-billing/infra-billing.module';
@@ -42,6 +43,7 @@ import { AuthModule } from './auth/auth.module';
         ConfigProfileModule,
         InternalSquadModule,
         ExternalSquadModule,
+        ExternalVlessModule,
         KeygenModule,
         NodesModule,
         NodesTrafficUsageHistoryModule,

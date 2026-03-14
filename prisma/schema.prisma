@@ -576,6 +576,77 @@ model ExternalSquadsTemplates {
   @@map("external_squads_templates")
 }
 
+model ExternalVlessPreset {
+  uuid             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  viewPosition     Int       @default(autoincrement()) @map("view_position")
+  slug             String    @unique @map("slug") @db.VarChar(80)
+  name             String    @map("name") @db.VarChar(80)
+  sourceUrls       String[]  @default([]) @map("source_urls")
+  includeKeywords  String[]  @default([]) @map("include_keywords")
+  requiredSecurity String?   @map("required_security") @db.VarChar(20)
+  selectionLimit   Int       @default(5) @map("selection_limit")
+  countryMode      String    @default("ANY") @map("country_mode") @db.VarChar(20)
+  uniqueCountries  Boolean   @default(false) @map("unique_countries")
+  isEnabled        Boolean   @default(true) @map("is_enabled")
+  lastSyncedAt     DateTime? @map("last_synced_at")
+
+  createdAt DateTime @default(dbgenerated("now()")) @map("created_at")
+  updatedAt DateTime @default(dbgenerated("now()")) @updatedAt @map("updated_at")
+
+  nodes ExternalVlessNode[]
+
+  @@map("external_vless_presets")
+}
+
+model ExternalVlessNode {
+  uuid           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  presetUuid     String    @map("preset_uuid") @db.Uuid
+  dedupeKey      String    @map("dedupe_key") @db.VarChar(64)
+  rawUri         String    @map("raw_uri")
+  sourcePosition Int       @default(0) @map("source_position")
+  isManual       Boolean   @default(false) @map("is_manual")
+  isEnabled      Boolean   @default(true) @map("is_enabled")
+  isPinned       Boolean   @default(false) @map("is_pinned")
+  priority       Int       @default(0) @map("priority")
+  originalRemark String    @map("original_remark")
+  aliasRemark    String?   @map("alias_remark")
+  remarkTags     String[]  @default([]) @map("remark_tags")
+  credential     String    @map("credential")
+  address        String    @map("address")
+  resolvedAddress String?  @map("resolved_address")
+  countryCode     String?  @map("country_code") @db.VarChar(2)
+  countryName     String?  @map("country_name")
+  displayCountry  String?  @map("display_country")
+  port           Int       @map("port")
+  network        String    @default("tcp") @map("network") @db.VarChar(20)
+  security       String    @default("none") @map("security") @db.VarChar(20)
+  host           String?   @map("host")
+  path           String?   @map("path")
+  serviceName    String?   @map("service_name")
+  authority      String?   @map("authority")
+  sni            String?   @map("sni")
+  alpn           String?   @map("alpn")
+  fingerprint    String?   @map("fingerprint")
+  publicKey      String?   @map("public_key")
+  shortId        String?   @map("short_id")
+  spiderX        String?   @map("spider_x")
+  flow           String?   @map("flow")
+  encryption     String?   @map("encryption")
+  isAlive        Boolean   @default(false) @map("is_alive")
+  latencyMs      Int?      @map("latency_ms")
+  lastCheckedAt  DateTime? @map("last_checked_at")
+
+  createdAt DateTime @default(dbgenerated("now()")) @map("created_at")
+  updatedAt DateTime @default(dbgenerated("now()")) @updatedAt @map("updated_at")
+
+  preset ExternalVlessPreset @relation(fields: [presetUuid], references: [uuid], onDelete: Cascade)
+
+  @@unique([presetUuid, dedupeKey])
+  @@index([presetUuid, isEnabled, isPinned])
+  @@index([presetUuid, isAlive, latencyMs])
+  @@map("external_vless_nodes")
+}
+
 model SubscriptionPageConfig {
   uuid         String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   viewPosition Int    @default(autoincrement()) @map("view_position")
