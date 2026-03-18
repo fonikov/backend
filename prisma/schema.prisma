@@ -611,6 +611,7 @@ model ExternalVlessNode {
   originalRemark String    @map("original_remark")
   aliasRemark    String?   @map("alias_remark")
   remarkTags     String[]  @default([]) @map("remark_tags")
+  customTags     String[]  @default([]) @map("custom_tags")
   credential     String    @map("credential")
   address        String    @map("address")
   resolvedAddress String?  @map("resolved_address")

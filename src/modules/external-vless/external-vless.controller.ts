@@ -33,6 +33,7 @@ class UpdateExternalVlessPresetDto {
 
 class UpdateExternalVlessNodeDto {
     aliasRemark?: null | string;
+    customTags?: string[];
     isEnabled?: boolean;
     isPinned?: boolean;
     priority?: number;
@@ -41,6 +42,7 @@ class UpdateExternalVlessNodeDto {
 class CreateManualExternalVlessNodeDto {
     rawUri!: string;
     aliasRemark?: string;
+    customTags?: string[];
     priority?: number;
 }
 

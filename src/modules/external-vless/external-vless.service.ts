@@ -67,6 +67,8 @@ type ExternalNodeRecord = {
     countryCode: null | string;
     countryName: null | string;
     credential: string;
+    customTags: string[];
+    dedupeKey: string;
     displayCountry: null | string;
     address: string;
     encryption: null | string;
@@ -74,6 +76,8 @@ type ExternalNodeRecord = {
     flow: null | string;
     host: null | string;
     isAlive: boolean;
+    isEnabled: boolean;
+    isManual: boolean;
     isPinned: boolean;
     latencyMs: null | number;
     network: string;
@@ -82,10 +86,13 @@ type ExternalNodeRecord = {
     port: number;
     priority: number;
     publicKey: null | string;
+    rawUri: string;
+    remarkTags: string[];
     resolvedAddress: null | string;
     security: string;
     serviceName: null | string;
     shortId: null | string;
+    sourcePosition: number;
     sni: null | string;
     spiderX: null | string;
     uuid: string;
@@ -106,7 +113,7 @@ const DEFAULT_PRESETS: ExternalPresetSeed[] = [
         ],
         includeKeywords: ['BL'],
         requiredSecurity: null,
-        selectionLimit: 15,
+        selectionLimit: 5,
         countryMode: 'ANY',
         uniqueCountries: true,
     },
@@ -163,7 +170,7 @@ export class ExternalVlessService implements OnModuleInit {
     public async getPresetsWithNodes() {
         await this.ensureDefaultPresets();
 
-        return this.prisma.tx.externalVlessPreset.findMany({
+        const presets = await this.prisma.tx.externalVlessPreset.findMany({
             orderBy: {
                 viewPosition: 'asc',
             },
@@ -178,6 +185,41 @@ export class ExternalVlessService implements OnModuleInit {
                     ],
                 },
             },
+        });
+
+        return presets.map((preset) => {
+            const enabledNodes = preset.nodes.filter((node) => node.isEnabled);
+            const selectedNodeIds = new Set(
+                this.selectNodesForPreset(preset, enabledNodes).map((node) => node.uuid),
+            );
+
+            const nodes = [...preset.nodes]
+                .sort((a, b) => {
+                    const selectedDelta =
+                        Number(selectedNodeIds.has(b.uuid)) - Number(selectedNodeIds.has(a.uuid));
+
+                    if (selectedDelta !== 0) {
+                        return selectedDelta;
+                    }
+
+                    return this.compareNodes(a, b);
+                })
+                .map((node) => ({
+                    ...node,
+                    bridgeLabel: this.getBridgeLabel(node),
+                    countryLabel: this.getCountryLabel(node),
+                    displayName: this.getNodeDisplayName(preset.name, node),
+                    effectiveTags: this.getEffectiveTags(preset.slug, node),
+                    isSelectedForSubscription: selectedNodeIds.has(node.uuid),
+                }));
+
+            return {
+                ...preset,
+                availableCountries: this.getAvailableCountries(preset.nodes),
+                nodes,
+                selectedNodesCount: selectedNodeIds.size,
+                totalNodesCount: preset.nodes.length,
+            };
         });
     }
 
@@ -294,6 +336,7 @@ export class ExternalVlessService implements OnModuleInit {
             },
             select: {
                 aliasRemark: true,
+                customTags: true,
                 dedupeKey: true,
                 isEnabled: true,
                 isPinned: true,
@@ -325,6 +368,7 @@ export class ExternalVlessService implements OnModuleInit {
                             countryCode: node.countryCode,
                             countryName: node.countryName,
                             credential: node.credential,
+                            customTags: existingNode?.customTags ?? [],
                             dedupeKey: node.dedupeKey,
                             displayCountry: node.displayCountry,
                             encryption: node.encryption || null,
@@ -394,6 +438,7 @@ export class ExternalVlessService implements OnModuleInit {
         uuid: string,
         body: {
             aliasRemark?: null | string;
+            customTags?: string[];
             isEnabled?: boolean;
             isPinned?: boolean;
             priority?: number;
@@ -404,6 +449,9 @@ export class ExternalVlessService implements OnModuleInit {
             data: {
                 ...(body.aliasRemark !== undefined
                     ? { aliasRemark: body.aliasRemark?.trim() || null }
+                    : {}),
+                ...(body.customTags !== undefined
+                    ? { customTags: this.normalizeTagList(body.customTags) }
                     : {}),
                 ...(body.isEnabled !== undefined ? { isEnabled: body.isEnabled } : {}),
                 ...(body.isPinned !== undefined ? { isPinned: body.isPinned } : {}),
@@ -416,6 +464,7 @@ export class ExternalVlessService implements OnModuleInit {
         presetUuid: string,
         body: {
             aliasRemark?: string;
+            customTags?: string[];
             priority?: number;
             rawUri: string;
         },
@@ -440,6 +489,7 @@ export class ExternalVlessService implements OnModuleInit {
                 countryCode: health.countryCode,
                 countryName: health.countryName,
                 credential: parsed.credential,
+                customTags: this.normalizeTagList(body.customTags || []),
                 dedupeKey: parsed.dedupeKey,
                 displayCountry: parsed.displayCountry,
                 encryption: parsed.encryption || null,
@@ -622,6 +672,65 @@ export class ExternalVlessService implements OnModuleInit {
                 uuid: node.uuid,
             },
         };
+    }
+
+    private getAvailableCountries(nodes: ExternalNodeRecord[]) {
+        return [...new Set(nodes.map((node) => this.getCountryLabel(node)).filter(Boolean))];
+    }
+
+    private getCountryLabel(node: Pick<ExternalNodeRecord, 'countryCode' | 'countryName' | 'displayCountry'>): string {
+        return (
+            node.displayCountry ||
+            node.countryName ||
+            node.countryCode ||
+            'Unknown'
+        );
+    }
+
+    private getNodeDisplayName(presetName: string, node: ExternalNodeRecord): string {
+        return (
+            node.aliasRemark ||
+            `${presetName} / ${this.getCountryLabel(node)} / ${node.originalRemark}`
+        );
+    }
+
+    private getBridgeLabel(node: Pick<ExternalNodeRecord, 'network' | 'remarkTags' | 'security'>): string {
+        const parts = [
+            node.security !== 'none' ? node.security.toUpperCase() : null,
+            node.network ? node.network.toUpperCase() : null,
+            node.remarkTags[0] || null,
+        ].filter(Boolean);
+
+        return parts.join(' / ') || 'DEFAULT';
+    }
+
+    private getPresetTags(slug: string): string[] {
+        switch (slug) {
+            case 'auto-black':
+                return ['BLACK'];
+            case 'auto-white-ru-ip':
+                return ['WHITE-RU'];
+            case 'auto-white-foreign-ip':
+                return ['WHITE-FOREIGN'];
+            default:
+                return ['EXTERNAL'];
+        }
+    }
+
+    private getEffectiveTags(slug: string, node: Pick<ExternalNodeRecord, 'countryCode' | 'customTags' | 'isManual' | 'network' | 'remarkTags' | 'security'>): string[] {
+        return this.normalizeTagList([
+            ...this.getPresetTags(slug),
+            ...node.remarkTags,
+            ...node.customTags,
+            node.countryCode || '',
+            node.network,
+            node.security,
+            node.isManual ? 'MANUAL' : 'AUTO',
+        ]);
+    }
+
+    private normalizeTagList(tags: string[]): string[] {
+        return [...new Set(tags.map((tag) => tag.trim().toUpperCase()).filter(Boolean))];
     }
 
     private dedupeNodes(nodes: ParsedExternalVless[]): ParsedExternalVless[] {
