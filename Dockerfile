@@ -1,12 +1,24 @@
-FROM alpine:3.19 AS frontend
+FROM node:24.13-alpine AS frontend
 WORKDIR /opt/frontend
 
 ARG BRANCH=main
 ARG FRONTEND_URL=https://github.com/remnawave/frontend/releases/latest/download/remnawave-frontend.zip
+ARG FRONTEND_SOURCE_REPO=
+ARG FRONTEND_SOURCE_REF=main
 
-RUN apk add --no-cache curl unzip ca-certificates \
-    && curl -L ${FRONTEND_URL} -o frontend.zip \
-    && unzip frontend.zip -d frontend_temp \
+RUN apk add --no-cache curl unzip git ca-certificates \
+    && if [ -n "${FRONTEND_SOURCE_REPO}" ]; then \
+        git clone --depth 1 --branch "${FRONTEND_SOURCE_REF}" "${FRONTEND_SOURCE_REPO}" source \
+        && cd source \
+        && npm ci \
+        && npm run start:build \
+        && mkdir -p /opt/frontend/frontend_temp \
+        && cp -R dist /opt/frontend/frontend_temp/dist; \
+    else \
+        curl -L ${FRONTEND_URL} -o frontend.zip \
+        && unzip frontend.zip -d frontend_temp; \
+    fi \
+    && mkdir -p frontend_temp/dist/assets \
     && curl -L https://validator.remna.dev/wasm_exec.js -o frontend_temp/dist/assets/wasm_exec.js \
     && curl -L https://validator.remna.dev/xray.schema.json -o frontend_temp/dist/assets/xray.schema.json \
     && curl -L https://validator.remna.dev/xray.schema.cn.json -o frontend_temp/dist/assets/xray.schema.cn.json \
