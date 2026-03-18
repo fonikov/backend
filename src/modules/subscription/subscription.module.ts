@@ -5,6 +5,7 @@ import { CqrsModule } from '@nestjs/cqrs';
 
 import { SUBSCRIPTION_CONTROLLER, SUBSCRIPTION_ROUTES } from '@libs/contracts/api';
 
+import { ExternalVlessModule } from '@modules/external-vless/external-vless.module';
 import { SubscriptionResponseRulesModule } from '@modules/subscription-response-rules/subscription-response-rules.module';
 import { ResponseRulesMiddleware } from '@modules/subscription-response-rules/middleware/response-rules.middleware';
 import { SubscriptionTemplateModule } from '@modules/subscription-template/subscription-template.module';
@@ -13,7 +14,12 @@ import { SubscriptionController, SubscriptionsController } from './controllers';
 import { SubscriptionService } from './subscription.service';
 
 @Module({
-    imports: [CqrsModule, SubscriptionTemplateModule, SubscriptionResponseRulesModule],
+    imports: [
+        CqrsModule,
+        ExternalVlessModule,
+        SubscriptionTemplateModule,
+        SubscriptionResponseRulesModule,
+    ],
     controllers: [SubscriptionController, SubscriptionsController],
     providers: [SubscriptionService],
     exports: [],
