@@ -50,6 +50,7 @@ import {
     SubscriptionWithConfigResponse,
 } from './models';
 import {
+    getMaskedSubscriptionUserInfo,
     getSubscriptionRefillDate,
     getSubscriptionUserInfo,
 } from './utils/get-user-info.headers';
@@ -655,6 +656,9 @@ export class SubscriptionService {
         const isSubscriptionUserInfoEnabled = this.configService.getOrThrow<boolean>(
             'SUBSCRIPTION_USERINFO_ENABLED',
         );
+        const isSubscriptionUserInfoExpireOnly = this.configService.getOrThrow<boolean>(
+            'SUBSCRIPTION_USERINFO_EXPIRE_ONLY',
+        );
         const headers: ISubscriptionHeaders = {
             'content-disposition': `attachment; filename=${user.username}`,
             'support-url': settings.supportLink,
@@ -697,6 +701,10 @@ export class SubscriptionService {
             if (refillDate) {
                 headers['subscription-refill-date'] = refillDate;
             }
+        } else if (isSubscriptionUserInfoExpireOnly) {
+            headers['subscription-userinfo'] = Object.entries(getMaskedSubscriptionUserInfo(user))
+                .map(([key, val]) => `${key}=${val}`)
+                .join('; ');
         }
 
         if (settings.customResponseHeaders) {

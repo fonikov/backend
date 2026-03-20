@@ -77,6 +77,11 @@ export const configSchema = z
             .default('false')
             .transform((val) => val === 'true' || val === '1')
             .pipe(z.boolean()),
+        SUBSCRIPTION_USERINFO_EXPIRE_ONLY: z
+            .string()
+            .default('false')
+            .transform((val) => val === 'true' || val === '1')
+            .pipe(z.boolean()),
         WEBHOOK_ENABLED: z
             .string()
             .default('false')

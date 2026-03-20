@@ -1579,6 +1579,7 @@ export class ExternalVlessService implements OnModuleInit {
                     ? target.path
                     : `/${target.path}`
                 : '/';
+            const encodedPath = encodeURI(normalizedPath);
             let settled = false;
 
             const finish = (value: null | number) => {
@@ -1595,7 +1596,7 @@ export class ExternalVlessService implements OnModuleInit {
                     headers: hostHeader ? { Host: hostHeader } : undefined,
                     host: target.address,
                     method: 'HEAD',
-                    path: normalizedPath,
+                    path: encodedPath,
                     port: target.port!,
                     rejectUnauthorized: false,
                     servername,
