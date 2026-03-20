@@ -46,7 +46,7 @@ export class RenderTemplatesService {
             skipEmptyHostsFallback: hasExternalFormattedHosts,
             fallbackOptions,
         });
-        const mergedHosts = [...formattedHosts, ...(additionalFormattedHosts || [])];
+        const mergedHosts = this.mergeFormattedHosts(formattedHosts, additionalFormattedHosts || []);
 
         switch (srrContext.matchedResponseType) {
             case 'XRAY_BASE64':
@@ -136,10 +136,9 @@ export class RenderTemplatesService {
             skipEmptyHostsFallback: hasExternalFormattedHosts,
         });
 
-        const rawHosts = await this.rawHostsGeneratorService.generateConfig([
-            ...formattedHosts,
-            ...(additionalFormattedHosts || []),
-        ]);
+        const rawHosts = await this.rawHostsGeneratorService.generateConfig(
+            this.mergeFormattedHosts(formattedHosts, additionalFormattedHosts || []),
+        );
 
         return {
             rawHosts,
@@ -165,5 +164,24 @@ export class RenderTemplatesService {
             subscription: this.outlineGeneratorService.generateConfig(formattedHosts, encodedTag),
             contentType: 'application/json',
         };
+    }
+
+    private mergeFormattedHosts(
+        formattedHosts: IFormattedHost[],
+        additionalFormattedHosts: IFormattedHost[],
+    ): IFormattedHost[] {
+        return [...formattedHosts, ...additionalFormattedHosts]
+            .map((host, index) => ({ host, index }))
+            .sort((a, b) => {
+                const positionA = a.host.dbData?.viewPosition ?? Number.MAX_SAFE_INTEGER;
+                const positionB = b.host.dbData?.viewPosition ?? Number.MAX_SAFE_INTEGER;
+
+                if (positionA !== positionB) {
+                    return positionA - positionB;
+                }
+
+                return a.index - b.index;
+            })
+            .map(({ host }) => host);
     }
 }
