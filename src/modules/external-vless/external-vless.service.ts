@@ -961,10 +961,9 @@ export class ExternalVlessService implements OnModuleInit {
             return Number(b.isPinned) - Number(a.isPinned);
         }
 
-        const fullProbeDelta =
-            Number(this.hasPreferredProbeSuccess(b)) - Number(this.hasPreferredProbeSuccess(a));
-        if (fullProbeDelta !== 0) {
-            return fullProbeDelta;
+        const probePriorityDelta = this.getProbePriority(b) - this.getProbePriority(a);
+        if (probePriorityDelta !== 0) {
+            return probePriorityDelta;
         }
 
         if (a.isAlive !== b.isAlive) {
@@ -1731,15 +1730,25 @@ export class ExternalVlessService implements OnModuleInit {
     private hasPreferredProbeSuccess(
         node: Pick<ExternalNodeRecord, 'tcpLatencyMs' | 'transportLatencyMs' | 'transportProbe'>,
     ): boolean {
-        if (node.tcpLatencyMs === null) {
-            return false;
+        return this.getProbePriority(node) >= 2;
+    }
+
+    private getProbePriority(
+        node: Pick<ExternalNodeRecord, 'tcpLatencyMs' | 'transportLatencyMs' | 'transportProbe'>,
+    ): number {
+        if (node.transportProbe !== 'NONE' && node.transportLatencyMs !== null) {
+            return 3;
         }
 
-        if (node.transportProbe === 'NONE') {
-            return true;
+        if (node.transportProbe === 'NONE' && node.tcpLatencyMs !== null) {
+            return 2;
         }
 
-        return node.transportLatencyMs !== null;
+        if (node.tcpLatencyMs !== null) {
+            return 1;
+        }
+
+        return 0;
     }
 
     private async probeTcpLatency(address: string, port: number): Promise<null | number> {
