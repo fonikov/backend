@@ -649,6 +649,9 @@ export class SubscriptionService {
         isHapp: boolean,
         settings: SubscriptionSettingsEntity,
     ): Promise<ISubscriptionHeaders> {
+        const isSubscriptionUserInfoEnabled = this.configService.getOrThrow<boolean>(
+            'SUBSCRIPTION_USERINFO_ENABLED',
+        );
         const headers: ISubscriptionHeaders = {
             'content-disposition': `attachment; filename=${user.username}`,
             'support-url': settings.supportLink,
@@ -661,10 +664,13 @@ export class SubscriptionService {
                 ),
             ).toString('base64')}`,
             'profile-update-interval': settings.profileUpdateInterval.toString(),
-            'subscription-userinfo': Object.entries(getSubscriptionUserInfo(user))
-                .map(([key, val]) => `${key}=${val}`)
-                .join('; '),
         };
+
+        if (isSubscriptionUserInfoEnabled) {
+            headers['subscription-userinfo'] = Object.entries(getSubscriptionUserInfo(user))
+                .map(([key, val]) => `${key}=${val}`)
+                .join('; ');
+        }
 
         if (settings.happAnnounce) {
             headers.announce = `base64:${Buffer.from(
@@ -685,9 +691,11 @@ export class SubscriptionService {
             headers['profile-web-page-url'] = this.resolveSubscriptionUrl(user.shortUuid);
         }
 
-        const refillDate = getSubscriptionRefillDate(user.trafficLimitStrategy);
-        if (refillDate) {
-            headers['subscription-refill-date'] = refillDate;
+        if (isSubscriptionUserInfoEnabled) {
+            const refillDate = getSubscriptionRefillDate(user.trafficLimitStrategy);
+            if (refillDate) {
+                headers['subscription-refill-date'] = refillDate;
+            }
         }
 
         if (settings.customResponseHeaders) {
