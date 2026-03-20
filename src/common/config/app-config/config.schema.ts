@@ -82,6 +82,22 @@ export const configSchema = z
             .default('false')
             .transform((val) => val === 'true' || val === '1')
             .pipe(z.boolean()),
+        EXTERNAL_VLESS_REMOTE_PROBE_URL: z
+            .string()
+            .transform((val) => (val.trim() === '' ? undefined : val.trim()))
+            .optional(),
+        EXTERNAL_VLESS_REMOTE_PROBE_TOKEN: z
+            .string()
+            .transform((val) => (val.trim() === '' ? undefined : val.trim()))
+            .optional(),
+        EXTERNAL_VLESS_REMOTE_PROBE_TIMEOUT_MS: z
+            .string()
+            .default('12000')
+            .transform((val) => parseInt(val, 10))
+            .refine(
+                (val) => Number.isInteger(val) && val >= 1000 && val <= 60000,
+                'EXTERNAL_VLESS_REMOTE_PROBE_TIMEOUT_MS must be between 1000 and 60000',
+            ),
         WEBHOOK_ENABLED: z
             .string()
             .default('false')
@@ -264,6 +280,29 @@ export const configSchema = z
                         }
                     }
                 }
+            }
+        }
+
+        if (data.EXTERNAL_VLESS_REMOTE_PROBE_URL) {
+            if (
+                !data.EXTERNAL_VLESS_REMOTE_PROBE_URL.startsWith('http://') &&
+                !data.EXTERNAL_VLESS_REMOTE_PROBE_URL.startsWith('https://')
+            ) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message:
+                        'EXTERNAL_VLESS_REMOTE_PROBE_URL must start with http:// or https://',
+                    path: ['EXTERNAL_VLESS_REMOTE_PROBE_URL'],
+                });
+            }
+
+            if (!data.EXTERNAL_VLESS_REMOTE_PROBE_TOKEN) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message:
+                        'EXTERNAL_VLESS_REMOTE_PROBE_TOKEN is required when EXTERNAL_VLESS_REMOTE_PROBE_URL is set',
+                    path: ['EXTERNAL_VLESS_REMOTE_PROBE_TOKEN'],
+                });
             }
         }
 

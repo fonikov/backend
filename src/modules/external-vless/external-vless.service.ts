@@ -11,6 +11,9 @@ import pMap from 'p-map';
 import { TransactionalAdapterPrisma } from '@nestjs-cls/transactional-adapter-prisma';
 import { TransactionHost } from '@nestjs-cls/transactional';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+
+import { ConfigSchema } from '@common/config/app-config';
 
 import {
     HostsEntity,
@@ -151,6 +154,25 @@ type ProbeTarget = {
     sni?: null | string;
 };
 
+type NodeHealth = {
+    countryCode: null | string;
+    countryName: null | string;
+    isAlive: boolean;
+    latencyMs: null | number;
+    resolvedAddress: null | string;
+    tcpLatencyMs: null | number;
+    transportLatencyMs: null | number;
+    transportProbe: string;
+};
+
+type ProbeLatencyResult = {
+    latencyMs: null | number;
+    resolvedAddress: null | string;
+    tcpLatencyMs: null | number;
+    transportLatencyMs: null | number;
+    transportProbe: string;
+};
+
 const WHITE_SOURCE_URLS = [
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt',
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt',
@@ -200,10 +222,35 @@ const DEFAULT_PRESETS: ExternalPresetSeed[] = [
 export class ExternalVlessService implements OnModuleInit {
     private readonly logger = new Logger(ExternalVlessService.name);
 
-    constructor(private readonly prisma: TransactionHost<TransactionalAdapterPrisma>) {}
+    constructor(
+        private readonly prisma: TransactionHost<TransactionalAdapterPrisma>,
+        private readonly configService: ConfigService<ConfigSchema, true>,
+    ) {}
 
     public async onModuleInit(): Promise<void> {
+        if (this.remoteProbeUrl) {
+            this.logger.log(`External remote probe enabled: ${this.remoteProbeUrl}`);
+        }
+
         await this.ensureDefaultPresets();
+    }
+
+    private get remoteProbeTimeoutMs(): number {
+        return this.configService.get('EXTERNAL_VLESS_REMOTE_PROBE_TIMEOUT_MS', {
+            infer: true,
+        });
+    }
+
+    private get remoteProbeToken(): string | undefined {
+        return this.configService.get('EXTERNAL_VLESS_REMOTE_PROBE_TOKEN', {
+            infer: true,
+        });
+    }
+
+    private get remoteProbeUrl(): string | undefined {
+        return this.configService.get('EXTERNAL_VLESS_REMOTE_PROBE_URL', {
+            infer: true,
+        });
     }
 
     public async ensureDefaultPresets(): Promise<void> {
@@ -326,10 +373,12 @@ export class ExternalVlessService implements OnModuleInit {
             },
         });
 
+        const healthChecks = await this.getNodeHealthBatch(nodes);
+
         await pMap(
             nodes,
-            async (node) => {
-                const health = await this.getNodeHealth(node);
+            async (node, index) => {
+                const health = healthChecks[index];
                 await this.prisma.tx.externalVlessNode.update({
                     where: {
                         uuid: node.uuid,
@@ -383,26 +432,23 @@ export class ExternalVlessService implements OnModuleInit {
         );
 
         const parsedNodes = this.dedupeNodes(fetchedSources.flat());
+        const healthChecks = await this.getNodeHealthBatch(parsedNodes);
 
-        const probedNodes = await pMap(
-            parsedNodes,
-            async (node) => {
-                const health = await this.getNodeHealth(node);
+        const probedNodes = parsedNodes.map((node, index) => {
+            const health = healthChecks[index];
 
-                return {
-                    ...node,
-                    countryCode: health.countryCode,
-                    countryName: health.countryName,
-                    isAlive: health.isAlive,
-                    latencyMs: health.latencyMs,
-                    resolvedAddress: health.resolvedAddress,
-                    tcpLatencyMs: health.tcpLatencyMs,
-                    transportLatencyMs: health.transportLatencyMs,
-                    transportProbe: health.transportProbe,
-                };
-            },
-            { concurrency: 20 },
-        );
+            return {
+                ...node,
+                countryCode: health.countryCode,
+                countryName: health.countryName,
+                isAlive: health.isAlive,
+                latencyMs: health.latencyMs,
+                resolvedAddress: health.resolvedAddress,
+                tcpLatencyMs: health.tcpLatencyMs,
+                transportLatencyMs: health.transportLatencyMs,
+                transportProbe: health.transportProbe,
+            };
+        });
 
         const existingAutoNodes = await this.prisma.tx.externalVlessNode.findMany({
             where: {
@@ -1374,30 +1420,107 @@ export class ExternalVlessService implements OnModuleInit {
         };
     }
 
-    private async getNodeHealth(target: ProbeTarget): Promise<{
-        countryCode: null | string;
-        countryName: null | string;
-        isAlive: boolean;
-        latencyMs: null | number;
-        resolvedAddress: null | string;
-        tcpLatencyMs: null | number;
-        transportLatencyMs: null | number;
-        transportProbe: string;
-    }> {
-        const resolvedAddress = await this.resolveAddress(target.address);
-        const geoData = resolvedAddress ? geoip.lookup(resolvedAddress) : null;
-        const probeResult = target.port ? await this.probeLatency(target) : null;
+    private async getNodeHealth(target: ProbeTarget): Promise<NodeHealth> {
+        const [health] = await this.getNodeHealthBatch([target]);
+        return health;
+    }
 
-        return {
-            countryCode: geoData?.country || null,
-            countryName: geoData?.country ? this.resolveCountryName(geoData.country) : null,
-            isAlive: probeResult !== null && probeResult.latencyMs !== null,
-            latencyMs: probeResult?.latencyMs ?? null,
-            resolvedAddress,
-            tcpLatencyMs: probeResult?.tcpLatencyMs ?? null,
-            transportLatencyMs: probeResult?.transportLatencyMs ?? null,
-            transportProbe: probeResult?.transportProbe ?? 'NONE',
-        };
+    private async getNodeHealthBatch(targets: ProbeTarget[]): Promise<NodeHealth[]> {
+        const remoteResults = await this.probeLatencyRemotely(targets);
+
+        return pMap(
+            targets,
+            async (target, index) => {
+                const remoteResult = remoteResults.get(index);
+                const localResult =
+                    target.port && !remoteResult ? await this.probeLatency(target) : null;
+                const resolvedAddress =
+                    remoteResult?.resolvedAddress ?? (await this.resolveAddress(target.address));
+                const geoData = resolvedAddress ? geoip.lookup(resolvedAddress) : null;
+                const probeResult = remoteResult ?? localResult;
+
+                return {
+                    countryCode: geoData?.country || null,
+                    countryName: geoData?.country
+                        ? this.resolveCountryName(geoData.country)
+                        : null,
+                    isAlive: probeResult !== null && probeResult.latencyMs !== null,
+                    latencyMs: probeResult?.latencyMs ?? null,
+                    resolvedAddress,
+                    tcpLatencyMs: probeResult?.tcpLatencyMs ?? null,
+                    transportLatencyMs: probeResult?.transportLatencyMs ?? null,
+                    transportProbe: probeResult?.transportProbe ?? 'NONE',
+                };
+            },
+            { concurrency: 20 },
+        );
+    }
+
+    private async probeLatencyRemotely(targets: ProbeTarget[]): Promise<Map<number, ProbeLatencyResult>> {
+        const remoteProbeUrl = this.remoteProbeUrl;
+        const remoteProbeToken = this.remoteProbeToken;
+
+        if (!remoteProbeUrl || !remoteProbeToken || targets.length === 0) {
+            return new Map();
+        }
+
+        try {
+            const response = await axios.post<{
+                results?: Array<{
+                    id?: string;
+                    latencyMs?: null | number;
+                    resolvedAddress?: null | string;
+                    tcpLatencyMs?: null | number;
+                    transportLatencyMs?: null | number;
+                    transportProbe?: string;
+                }>;
+            }>(
+                remoteProbeUrl,
+                {
+                    targets: targets.map((target, index) => ({
+                        id: String(index),
+                        address: target.address,
+                        authority: target.authority,
+                        host: target.host,
+                        network: target.network,
+                        path: target.path,
+                        port: target.port,
+                        security: target.security,
+                        sni: target.sni,
+                    })),
+                    timeoutMs: this.remoteProbeTimeoutMs,
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${remoteProbeToken}`,
+                    },
+                    timeout: this.remoteProbeTimeoutMs + 2000,
+                },
+            );
+
+            const results = new Map<number, ProbeLatencyResult>();
+
+            for (const result of response.data.results || []) {
+                if (!result.id || !/^\d+$/.test(result.id)) {
+                    continue;
+                }
+
+                const index = Number(result.id);
+                results.set(index, {
+                    latencyMs: result.latencyMs ?? null,
+                    resolvedAddress: result.resolvedAddress ?? null,
+                    tcpLatencyMs: result.tcpLatencyMs ?? null,
+                    transportLatencyMs: result.transportLatencyMs ?? null,
+                    transportProbe: result.transportProbe || 'NONE',
+                });
+            }
+
+            return results;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.logger.warn(`Remote probe failed, falling back to local probe: ${message}`);
+            return new Map();
+        }
     }
 
     private async resolveAddress(address: string): Promise<null | string> {
