@@ -1,6 +1,10 @@
 import { TSecurityLayers, TSubscriptionTemplateType } from '@libs/contracts/constants';
 
-import { HostsEntity } from '../entities/hosts.entity';
+import {
+    HostsEntity,
+    ReadySubscriptionHostState,
+    THostSourceType,
+} from '../entities/hosts.entity';
 
 export class HostResponseModel {
     public uuid: string;
@@ -44,6 +48,8 @@ export class HostResponseModel {
 
     public excludedInternalSquads: string[];
     public excludeFromSubscriptionTypes: TSubscriptionTemplateType[];
+    public sourceType: THostSourceType;
+    public readySubscription: null | ReadySubscriptionHostState;
 
     constructor(data: HostsEntity) {
         this.uuid = data.uuid;
@@ -86,5 +92,7 @@ export class HostResponseModel {
 
         this.xrayJsonTemplateUuid = data.xrayJsonTemplateUuid;
         this.excludeFromSubscriptionTypes = data.excludeFromSubscriptionTypes;
+        this.sourceType = data.sourceType;
+        this.readySubscription = data.readySubscription;
     }
 }

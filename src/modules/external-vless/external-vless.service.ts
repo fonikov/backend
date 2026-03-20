@@ -10,6 +10,11 @@ import { TransactionalAdapterPrisma } from '@nestjs-cls/transactional-adapter-pr
 import { TransactionHost } from '@nestjs-cls/transactional';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
+import {
+    HostsEntity,
+    ReadySubscriptionHostState,
+    ReadySubscriptionResolvedNode,
+} from '@modules/hosts/entities/hosts.entity';
 import { IFormattedHost } from '@modules/subscription-template/generators/interfaces';
 import { UserEntity } from '@modules/users/entities';
 
@@ -96,6 +101,35 @@ type ExternalNodeRecord = {
     sni: null | string;
     spiderX: null | string;
     uuid: string;
+};
+
+type ReadySubscriptionSelectionInput = {
+    activeNodeLimit?: number;
+    autoReplace?: boolean;
+    presetUuid: string;
+    selectedNodes: {
+        isPinned?: boolean;
+        nodeUuid: string;
+    }[];
+};
+
+type ReadySubscriptionRelationRecord = {
+    activeNodeLimit: number;
+    autoReplace: boolean;
+    hostUuid: string;
+    nodes: {
+        dedupeKey: string;
+        isPinned: boolean;
+        viewPosition: number;
+    }[];
+    preset: {
+        countryMode: string;
+        name: string;
+        selectionLimit: number;
+        slug: string;
+        uniqueCountries: boolean;
+        uuid: string;
+    };
 };
 
 const WHITE_SOURCE_URLS = [
@@ -519,6 +553,204 @@ export class ExternalVlessService implements OnModuleInit {
         });
     }
 
+    public async resolveReadySubscriptionSelectionInput(
+        input: ReadySubscriptionSelectionInput,
+    ): Promise<{
+        activeNodeLimit: number;
+        autoReplace: boolean;
+        presetUuid: string;
+        selectedNodes: {
+            dedupeKey: string;
+            isPinned: boolean;
+        }[];
+    }> {
+        const preset = await this.prisma.tx.externalVlessPreset.findUnique({
+            where: {
+                uuid: input.presetUuid,
+            },
+            select: {
+                uuid: true,
+            },
+        });
+
+        if (!preset) {
+            throw new Error('External VLESS preset not found');
+        }
+
+        const selectedNodes = await this.prisma.tx.externalVlessNode.findMany({
+            where: {
+                presetUuid: input.presetUuid,
+                uuid: {
+                    in: input.selectedNodes.map((node) => node.nodeUuid),
+                },
+            },
+            select: {
+                dedupeKey: true,
+                uuid: true,
+            },
+        });
+
+        const selectedNodeMap = new Map(selectedNodes.map((node) => [node.uuid, node] as const));
+
+        const normalizedSelectedNodes = input.selectedNodes
+            .map((node) => {
+                const resolvedNode = selectedNodeMap.get(node.nodeUuid);
+
+                if (!resolvedNode) {
+                    throw new Error(`External VLESS node ${node.nodeUuid} not found`);
+                }
+
+                return {
+                    dedupeKey: resolvedNode.dedupeKey,
+                    isPinned: Boolean(node.isPinned),
+                };
+            })
+            .filter(
+                (node, index, array) =>
+                    array.findIndex((item) => item.dedupeKey === node.dedupeKey) === index,
+            );
+
+        if (normalizedSelectedNodes.length === 0) {
+            throw new Error('At least one external VLESS node must be selected');
+        }
+
+        return {
+            presetUuid: input.presetUuid,
+            autoReplace: input.autoReplace ?? true,
+            activeNodeLimit: Math.max(
+                1,
+                Math.min(10, input.activeNodeLimit ?? normalizedSelectedNodes.length),
+            ),
+            selectedNodes: normalizedSelectedNodes,
+        };
+    }
+
+    public async buildReadySubscriptionStates(
+        relations: ReadySubscriptionRelationRecord[],
+    ): Promise<Map<string, ReadySubscriptionHostState>> {
+        const result = new Map<string, ReadySubscriptionHostState>();
+
+        if (relations.length === 0) {
+            return result;
+        }
+
+        const presetUuidSet = new Set<string>(
+            relations.map((relation: ReadySubscriptionRelationRecord) => relation.preset.uuid),
+        );
+        const presetNodes = await this.prisma.tx.externalVlessNode.findMany({
+            where: {
+                presetUuid: {
+                    in: [...presetUuidSet],
+                },
+            },
+            orderBy: [
+                { isPinned: 'desc' },
+                { isAlive: 'desc' },
+                { latencyMs: 'asc' },
+                { priority: 'desc' },
+                { sourcePosition: 'asc' },
+            ],
+        });
+
+        const nodesByPreset = new Map<string, ExternalNodeRecord[]>();
+        for (const node of presetNodes) {
+            const list = nodesByPreset.get(node.presetUuid) || [];
+            list.push(node);
+            nodesByPreset.set(node.presetUuid, list);
+        }
+
+        for (const relation of relations) {
+            const presetPool = nodesByPreset.get(relation.preset.uuid) || [];
+            const selectedNodes = this.buildSelectedReadyNodes(relation, presetPool);
+            const activeNodes = this.buildActiveReadyNodes(relation, presetPool, selectedNodes);
+
+            result.set(relation.hostUuid, {
+                presetUuid: relation.preset.uuid,
+                presetName: relation.preset.name,
+                presetSlug: relation.preset.slug,
+                autoReplace: relation.autoReplace,
+                activeNodeLimit: relation.activeNodeLimit,
+                selectedNodes,
+                activeNodes,
+            });
+        }
+
+        return result;
+    }
+
+    public async getFormattedHostsForReadyHosts(
+        hosts: HostsEntity[],
+        _user: UserEntity,
+    ): Promise<IFormattedHost[]> {
+        if (hosts.length === 0) {
+            return [];
+        }
+
+        const relations = await this.prisma.tx.readySubscriptionHost.findMany({
+            where: {
+                hostUuid: {
+                    in: hosts.map((host) => host.uuid),
+                },
+            },
+            include: {
+                preset: {
+                    select: {
+                        countryMode: true,
+                        name: true,
+                        selectionLimit: true,
+                        slug: true,
+                        uniqueCountries: true,
+                        uuid: true,
+                    },
+                },
+                nodes: {
+                    orderBy: {
+                        viewPosition: 'asc',
+                    },
+                },
+            },
+        });
+
+        const readyStateMap = await this.buildReadySubscriptionStates(relations);
+        const hostMap = new Map(hosts.map((host) => [host.uuid, host] as const));
+        const presetUuidSet = new Set(relations.map((relation) => relation.preset.uuid));
+        const presetNodes = await this.prisma.tx.externalVlessNode.findMany({
+            where: {
+                presetUuid: {
+                    in: [...presetUuidSet],
+                },
+            },
+        });
+        const nodesByPreset = new Map<string, ExternalNodeRecord[]>();
+        for (const node of presetNodes) {
+            const list = nodesByPreset.get(node.presetUuid) || [];
+            list.push(node);
+            nodesByPreset.set(node.presetUuid, list);
+        }
+
+        return relations.flatMap((relation: ReadySubscriptionRelationRecord) => {
+            const host = hostMap.get(relation.hostUuid);
+            const readyState = readyStateMap.get(relation.hostUuid);
+            if (!host || !readyState) {
+                return [];
+            }
+
+            const presetPool = nodesByPreset.get(relation.preset.uuid) || [];
+
+            return readyState.activeNodes.flatMap((node, index) => {
+                const nodeRecord =
+                    presetPool.find((poolNode) => poolNode.uuid === node.uuid) ||
+                    presetPool.find((poolNode) => poolNode.dedupeKey === node.dedupeKey);
+
+                if (!nodeRecord) {
+                    return [];
+                }
+
+                return this.toFormattedReadyHost(host, readyState, nodeRecord, index);
+            });
+        });
+    }
+
     public async getFormattedHostsForUser(_user: UserEntity): Promise<IFormattedHost[]> {
         const presets = await this.prisma.tx.externalVlessPreset.findMany({
             where: {
@@ -671,6 +903,194 @@ export class ExternalVlessService implements OnModuleInit {
                 tag: `external:${presetName}`,
                 uuid: node.uuid,
             },
+        };
+    }
+
+    private buildSelectedReadyNodes(
+        relation: ReadySubscriptionRelationRecord,
+        presetPool: ExternalNodeRecord[],
+    ): ReadySubscriptionResolvedNode[] {
+        const poolByDedupeKey = new Map(presetPool.map((node) => [node.dedupeKey, node] as const));
+
+        return [...relation.nodes]
+            .sort((a, b) => {
+                if (a.isPinned !== b.isPinned) {
+                    return Number(b.isPinned) - Number(a.isPinned);
+                }
+
+                return a.viewPosition - b.viewPosition;
+            })
+            .map((selectedNode) =>
+                this.toResolvedReadyNode(
+                    relation.preset.slug,
+                    poolByDedupeKey.get(selectedNode.dedupeKey) || null,
+                    selectedNode.dedupeKey,
+                    selectedNode.isPinned,
+                    false,
+                ),
+            );
+    }
+
+    private buildActiveReadyNodes(
+        relation: ReadySubscriptionRelationRecord,
+        presetPool: ExternalNodeRecord[],
+        selectedNodes: ReadySubscriptionResolvedNode[],
+    ): ReadySubscriptionResolvedNode[] {
+        const seen = new Set<string>();
+        const selectedDedupeKeys = new Set(selectedNodes.map((node) => node.dedupeKey));
+        const enabledSelectedDedupeKeys = new Set(
+            presetPool.filter((node) => node.isEnabled).map((node) => node.dedupeKey),
+        );
+
+        const orderedSelectedAlive = selectedNodes.filter(
+            (node) => node.isAlive && enabledSelectedDedupeKeys.has(node.dedupeKey),
+        );
+        const orderedSelectedOffline = selectedNodes.filter(
+            (node) => !node.isAlive && enabledSelectedDedupeKeys.has(node.dedupeKey),
+        );
+
+        const replacementNodes = presetPool
+            .filter((node) => node.isEnabled && !selectedDedupeKeys.has(node.dedupeKey))
+            .sort((a, b) => this.compareNodes(a, b))
+            .map((node) =>
+                this.toResolvedReadyNode(
+                    relation.preset.slug,
+                    node,
+                    node.dedupeKey,
+                    false,
+                    true,
+                ),
+            );
+
+        const orderedReplacementAlive = replacementNodes.filter((node) => node.isAlive);
+        const orderedReplacementOffline = replacementNodes.filter((node) => !node.isAlive);
+
+        const composed = relation.autoReplace
+            ? [
+                  ...orderedSelectedAlive,
+                  ...orderedReplacementAlive,
+                  ...orderedSelectedOffline,
+                  ...orderedReplacementOffline,
+              ]
+            : [...orderedSelectedAlive, ...orderedSelectedOffline];
+
+        const activeNodes: ReadySubscriptionResolvedNode[] = [];
+
+        for (const node of composed) {
+            if (seen.has(node.dedupeKey)) {
+                continue;
+            }
+
+            seen.add(node.dedupeKey);
+            activeNodes.push(node);
+
+            if (activeNodes.length >= relation.activeNodeLimit) {
+                break;
+            }
+        }
+
+        return activeNodes;
+    }
+
+    private toResolvedReadyNode(
+        presetSlug: string,
+        node: ExternalNodeRecord | null,
+        dedupeKey: string,
+        isPinned: boolean,
+        isAutoReplacement: boolean,
+    ): ReadySubscriptionResolvedNode {
+        if (!node) {
+            return {
+                uuid: null,
+                dedupeKey,
+                displayName: 'Недоступный сервер',
+                originalRemark: 'Недоступный сервер',
+                countryCode: null,
+                countryLabel: 'Не определена',
+                latencyMs: null,
+                isAlive: false,
+                isPinned,
+                isAutoReplacement,
+                bridgeLabel: 'UNKNOWN',
+                effectiveTags: this.getPresetTags(presetSlug),
+            };
+        }
+
+        return {
+            uuid: node.uuid,
+            dedupeKey: node.dedupeKey,
+            displayName: this.getNodeDisplayName('Ready Host', node),
+            originalRemark: node.originalRemark,
+            countryCode: node.countryCode,
+            countryLabel: this.getCountryLabel(node),
+            latencyMs: node.latencyMs,
+            isAlive: node.isAlive,
+            isPinned,
+            isAutoReplacement,
+            bridgeLabel: this.getBridgeLabel(node),
+            effectiveTags: this.getEffectiveTags(presetSlug, node),
+        };
+    }
+
+    private toFormattedReadyHost(
+        host: HostsEntity,
+        readyState: ReadySubscriptionHostState,
+        node: ExternalNodeRecord,
+        index: number,
+    ): IFormattedHost {
+        const remarkSuffix =
+            readyState.activeNodes.length > 1 ? ` ^~${index + 1}~^` : '';
+
+        return {
+            address: node.address,
+            alpn: node.alpn || '',
+            allowInsecure: host.allowInsecure,
+            dbData: {
+                rawInbound: null,
+                inboundTag: 'ready-subscription',
+                uuid: host.uuid,
+                configProfileUuid: host.configProfileUuid,
+                configProfileInboundUuid: host.configProfileInboundUuid,
+                isDisabled: host.isDisabled,
+                viewPosition: host.viewPosition,
+                remark: host.remark,
+                isHidden: host.isHidden,
+                tag: host.tag,
+                vlessRouteId: host.vlessRouteId,
+            },
+            encryption: node.encryption || 'none',
+            fingerprint: node.fingerprint || 'chrome',
+            flow: node.flow === 'xtls-rprx-vision' ? 'xtls-rprx-vision' : '',
+            host: node.host || node.authority || '',
+            mihomoX25519: host.mihomoX25519,
+            muxParams: host.muxParams,
+            network: node.network as IFormattedHost['network'],
+            password: {
+                ssPassword: '',
+                trojanPassword: '',
+                vlessPassword: node.credential,
+            },
+            path: node.network === 'grpc' ? node.serviceName || '' : node.path || '',
+            port: node.port,
+            protocol: 'vless',
+            publicKey: node.publicKey || '',
+            remark: `${host.remark}${remarkSuffix}`,
+            serverDescription: host.serverDescription
+                ? Buffer.from(host.serverDescription).toString('base64')
+                : undefined,
+            serviceInfo: {
+                uuid: host.uuid,
+                isHidden: host.isHidden,
+                tag: host.tag,
+                excludeFromSubscriptionTypes: host.excludeFromSubscriptionTypes,
+            },
+            shortId: node.shortId || '',
+            shuffleHost: host.shuffleHost,
+            sni: node.sni || '',
+            sockoptParams: host.sockoptParams,
+            spiderX: node.spiderX || '',
+            tls: node.security || 'none',
+            xHttpExtraParams: host.xHttpExtraParams,
         };
     }
 

@@ -228,11 +228,19 @@ export class SubscriptionService {
                 return new SubscriptionNotFoundResponse();
             }
 
+            const readyHosts = hosts.response.filter(
+                (host) => host.sourceType === 'READY_SUBSCRIPTION',
+            );
+            let manualHosts = hosts.response.filter((host) => host.sourceType !== 'READY_SUBSCRIPTION');
+
             const externalFormattedHosts =
-                await this.externalVlessService.getFormattedHostsForUser(user.response);
+                await this.externalVlessService.getFormattedHostsForReadyHosts(
+                    readyHosts,
+                    user.response,
+                );
 
             if (subscriptionSettings.randomizeHosts) {
-                hosts.response = _.shuffle(hosts.response);
+                manualHosts = _.shuffle(manualHosts);
             }
 
             await this.updateAndReportSubscriptionRequest(
@@ -244,7 +252,7 @@ export class SubscriptionService {
             const subscription = await this.renderTemplatesService.generateSubscription({
                 srrContext,
                 user: user.response,
-                hosts: hosts.response,
+                hosts: manualHosts,
                 additionalFormattedHosts: externalFormattedHosts,
                 hostsOverrides,
             });
@@ -341,11 +349,16 @@ export class SubscriptionService {
                 return fail(ERRORS.GET_ALL_HOSTS_ERROR);
             }
 
+            const readyHosts = hosts.response.filter(
+                (host) => host.sourceType === 'READY_SUBSCRIPTION',
+            );
+            let manualHosts = hosts.response.filter((host) => host.sourceType !== 'READY_SUBSCRIPTION');
+
             const externalFormattedHosts =
-                await this.externalVlessService.getFormattedHostsForUser(user);
+                await this.externalVlessService.getFormattedHostsForReadyHosts(readyHosts, user);
 
             if (settingEntity.randomizeHosts) {
-                hosts.response = _.shuffle(hosts.response);
+                manualHosts = _.shuffle(manualHosts);
             }
 
             await this.updateAndReportSubscriptionRequest(user.uuid, userAgent, requestIp);
@@ -356,7 +369,7 @@ export class SubscriptionService {
                 subscription = await this.renderTemplatesService.generateRawSubscription({
                     subscriptionSettings: patchedSettingEntity,
                     user: user,
-                    hosts: hosts.response,
+                    hosts: manualHosts,
                     additionalFormattedHosts: externalFormattedHosts,
                     hostsOverrides: patchedHostsOverrides,
                 });
@@ -1053,12 +1066,25 @@ export class SubscriptionService {
             );
 
             const allHosts = allHostsResult.isOk ? allHostsResult.response : [];
-            const externalFormattedHosts =
-                await this.externalVlessService.getFormattedHostsForUser(userEntity);
+            const enabledReadyHosts = allHosts.filter(
+                (host) => host.sourceType === 'READY_SUBSCRIPTION' && !host.isDisabled && !host.isHidden,
+            );
+            const disabledReadyHosts = allHosts.filter(
+                (host) => host.sourceType === 'READY_SUBSCRIPTION' && host.isDisabled && !host.isHidden,
+            );
+            const hiddenReadyHosts = allHosts.filter(
+                (host) => host.sourceType === 'READY_SUBSCRIPTION' && host.isHidden && !host.isDisabled,
+            );
 
-            const enabledHosts = allHosts.filter((h) => !h.isDisabled && !h.isHidden);
-            const disabledHosts = allHosts.filter((h) => h.isDisabled && !h.isHidden);
-            const hiddenHosts = allHosts.filter((h) => h.isHidden && !h.isDisabled);
+            const enabledHosts = allHosts.filter(
+                (h) => h.sourceType !== 'READY_SUBSCRIPTION' && !h.isDisabled && !h.isHidden,
+            );
+            const disabledHosts = allHosts.filter(
+                (h) => h.sourceType !== 'READY_SUBSCRIPTION' && h.isDisabled && !h.isHidden,
+            );
+            const hiddenHosts = allHosts.filter(
+                (h) => h.sourceType !== 'READY_SUBSCRIPTION' && h.isHidden && !h.isDisabled,
+            );
 
             const formatOrSkip = async (hosts: typeof allHosts, allowEmpty: boolean = false) => {
                 if (hosts.length === 0 && !allowEmpty) return [];
@@ -1073,15 +1099,36 @@ export class SubscriptionService {
             const formattedEnabled = await formatOrSkip(enabledHosts, true);
             const formattedDisabled = await formatOrSkip(disabledHosts);
             const formattedHidden = await formatOrSkip(hiddenHosts);
+            const formattedEnabledReady =
+                await this.externalVlessService.getFormattedHostsForReadyHosts(
+                    enabledReadyHosts,
+                    userEntity,
+                );
+            const formattedDisabledReady =
+                await this.externalVlessService.getFormattedHostsForReadyHosts(
+                    disabledReadyHosts,
+                    userEntity,
+                );
+            const formattedHiddenReady =
+                await this.externalVlessService.getFormattedHostsForReadyHosts(
+                    hiddenReadyHosts,
+                    userEntity,
+                );
 
             return ok(
                 new ConnectionKeysResponseModel({
                     enabledKeys: this.xrayGeneratorService.generateLinks(
-                        [...formattedEnabled, ...externalFormattedHosts],
+                        [...formattedEnabled, ...formattedEnabledReady],
                         false,
                     ),
-                    disabledKeys: this.xrayGeneratorService.generateLinks(formattedDisabled, false),
-                    hiddenKeys: this.xrayGeneratorService.generateLinks(formattedHidden, false),
+                    disabledKeys: this.xrayGeneratorService.generateLinks(
+                        [...formattedDisabled, ...formattedDisabledReady],
+                        false,
+                    ),
+                    hiddenKeys: this.xrayGeneratorService.generateLinks(
+                        [...formattedHidden, ...formattedHiddenReady],
+                        false,
+                    ),
                 }),
             );
         } catch (error) {

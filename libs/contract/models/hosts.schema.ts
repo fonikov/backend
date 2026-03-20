@@ -3,6 +3,21 @@ import { z } from 'zod';
 import { SUBSCRIPTION_TEMPLATE_TYPE } from '../constants';
 import { SECURITY_LAYERS } from '../constants/hosts';
 
+const ReadySubscriptionNodeSchema = z.object({
+    uuid: z.string().uuid().nullable(),
+    dedupeKey: z.string(),
+    displayName: z.string(),
+    originalRemark: z.string(),
+    countryCode: z.string().nullable(),
+    countryLabel: z.string(),
+    latencyMs: z.number().int().nullable(),
+    isAlive: z.boolean(),
+    isPinned: z.boolean(),
+    isAutoReplacement: z.boolean(),
+    bridgeLabel: z.string(),
+    effectiveTags: z.array(z.string()),
+});
+
 export const HostsSchema = z.object({
     uuid: z.string().uuid(),
     viewPosition: z.number().int(),
@@ -39,4 +54,17 @@ export const HostsSchema = z.object({
     xrayJsonTemplateUuid: z.string().uuid().nullable(),
     excludedInternalSquads: z.array(z.string().uuid()),
     excludeFromSubscriptionTypes: z.array(z.nativeEnum(SUBSCRIPTION_TEMPLATE_TYPE)).optional(),
+    sourceType: z.enum(['MANUAL', 'READY_SUBSCRIPTION']).default('MANUAL'),
+    readySubscription: z
+        .object({
+            presetUuid: z.string().uuid(),
+            presetName: z.string(),
+            presetSlug: z.string(),
+            autoReplace: z.boolean(),
+            activeNodeLimit: z.number().int(),
+            selectedNodes: z.array(ReadySubscriptionNodeSchema),
+            activeNodes: z.array(ReadySubscriptionNodeSchema),
+        })
+        .nullable()
+        .default(null),
 });

@@ -10,6 +10,20 @@ import {
 import { HOSTS_ROUTES, REST_API } from '../../api';
 import { HostsSchema } from '../../models';
 
+const ReadySubscriptionRequestSchema = z.object({
+    presetUuid: z.string().uuid(),
+    autoReplace: z.boolean().optional().default(true),
+    activeNodeLimit: z.number().int().min(1).max(10).optional().default(1),
+    selectedNodes: z
+        .array(
+            z.object({
+                nodeUuid: z.string().uuid(),
+                isPinned: z.boolean().optional().default(false),
+            }),
+        )
+        .min(1),
+});
+
 export namespace CreateHostCommand {
     export const url = REST_API.HOSTS.CREATE;
     export const TSQ_url = url;
@@ -91,6 +105,8 @@ export namespace CreateHostCommand {
         excludeFromSubscriptionTypes: z
             .optional(z.array(z.nativeEnum(SUBSCRIPTION_TEMPLATE_TYPE)))
             .describe('Optional. Subscription types from which the host will be excluded from.'),
+        sourceType: z.enum(['MANUAL', 'READY_SUBSCRIPTION']).optional().default('MANUAL'),
+        readySubscription: z.optional(ReadySubscriptionRequestSchema),
     });
 
     export type Request = z.infer<typeof RequestSchema>;

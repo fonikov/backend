@@ -215,7 +215,7 @@ export class HostsRepository implements ICrud<HostsEntity> {
             .orderBy('hosts.viewPosition', 'asc')
             .execute();
 
-        return hosts.map(
+        const entities = hosts.map(
             (h) =>
                 new HostWithRawInbound({
                     ...h,
@@ -223,6 +223,20 @@ export class HostsRepository implements ICrud<HostsEntity> {
                     xHttpExtraParams: h.xhttpExtraParams,
                 }),
         );
+
+        const readySubscriptions = await this.findReadySubscriptionHostsByHostUuids(
+            entities.map((host) => host.uuid),
+        );
+        const readyHostUuidSet = new Set(
+            readySubscriptions.map((host: { hostUuid: string }) => host.hostUuid),
+        );
+
+        return entities.map((host) => {
+            host.sourceType = readyHostUuidSet.has(host.uuid) ? 'READY_SUBSCRIPTION' : 'MANUAL';
+            host.readySubscription = null;
+
+            return host;
+        });
     }
 
     public async reorderMany(dto: IReorderHost[]): Promise<boolean> {
@@ -291,5 +305,80 @@ export class HostsRepository implements ICrud<HostsEntity> {
             where: { hostUuid },
         });
         return !!result;
+    }
+
+    public async setReadySubscriptionHost(
+        hostUuid: string,
+        data: {
+            activeNodeLimit: number;
+            autoReplace: boolean;
+            presetUuid: string;
+            selectedNodes: {
+                dedupeKey: string;
+                isPinned: boolean;
+            }[];
+        },
+    ): Promise<boolean> {
+        await this.prisma.tx.readySubscriptionHost.upsert({
+            where: { hostUuid },
+            create: {
+                hostUuid,
+                presetUuid: data.presetUuid,
+                autoReplace: data.autoReplace,
+                activeNodeLimit: data.activeNodeLimit,
+            },
+            update: {
+                presetUuid: data.presetUuid,
+                autoReplace: data.autoReplace,
+                activeNodeLimit: data.activeNodeLimit,
+            },
+        });
+
+        await this.prisma.tx.readySubscriptionHostNode.deleteMany({
+            where: { hostUuid },
+        });
+
+        if (data.selectedNodes.length > 0) {
+            await this.prisma.tx.readySubscriptionHostNode.createMany({
+                data: data.selectedNodes.map((node, index) => ({
+                    hostUuid,
+                    dedupeKey: node.dedupeKey,
+                    isPinned: node.isPinned,
+                    viewPosition: index + 1,
+                })),
+            });
+        }
+
+        return true;
+    }
+
+    public async deleteReadySubscriptionHost(hostUuid: string): Promise<boolean> {
+        await this.prisma.tx.readySubscriptionHost.deleteMany({
+            where: { hostUuid },
+        });
+
+        return true;
+    }
+
+    public async findReadySubscriptionHostsByHostUuids(hostUuids: string[]) {
+        if (hostUuids.length === 0) {
+            return [];
+        }
+
+        return this.prisma.tx.readySubscriptionHost.findMany({
+            where: {
+                hostUuid: {
+                    in: hostUuids,
+                },
+            },
+            include: {
+                preset: true,
+                nodes: {
+                    orderBy: {
+                        viewPosition: 'asc',
+                    },
+                },
+            },
+        });
     }
 }

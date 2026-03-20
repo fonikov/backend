@@ -6,6 +6,7 @@ import { ERRORS } from '@libs/contracts/constants';
 
 import { GetSubscriptionTemplateByUuidQuery } from '@modules/subscription-template/queries/get-template-by-uuid';
 import { GetConfigProfileByUuidQuery } from '@modules/config-profiles/queries/get-config-profile-by-uuid';
+import { ExternalVlessService } from '@modules/external-vless/external-vless.service';
 import { ReorderHostRequestDto } from '@modules/hosts/dtos/reorder-hosts.dto';
 
 import { DeleteHostResponseModel } from './models/delete-host.response.model';
@@ -20,6 +21,7 @@ export class HostsService {
     constructor(
         private readonly hostsRepository: HostsRepository,
         private readonly queryBus: QueryBus,
+        private readonly externalVlessService: ExternalVlessService,
     ) {}
 
     public async createHost(dto: CreateHostRequestDto): Promise<TResult<HostsEntity>> {
@@ -82,22 +84,25 @@ export class HostsService {
                 serverDescription = undefined;
             }
 
-            const { inbound: inboundObj, nodes, excludedInternalSquads, ...rest } = dto;
+            const {
+                inbound: inboundObj,
+                nodes,
+                excludedInternalSquads,
+                readySubscription,
+                sourceType,
+                ...rest
+            } = dto;
 
-            const configProfile = await this.queryBus.execute(
-                new GetConfigProfileByUuidQuery(inboundObj.configProfileUuid),
-            );
-
-            if (!configProfile.isOk) {
-                return fail(ERRORS.CONFIG_PROFILE_NOT_FOUND);
+            const inboundResolution = await this.resolveInbound(inboundObj);
+            if (!inboundResolution.isOk) {
+                return inboundResolution;
             }
 
-            const configProfileInbound = configProfile.response.inbounds.find(
-                (inbound) => inbound.uuid === inboundObj.configProfileInboundUuid,
-            );
-            if (!configProfileInbound) {
-                return fail(ERRORS.CONFIG_PROFILE_INBOUND_NOT_FOUND_IN_SPECIFIED_PROFILE);
-            }
+            const resolvedReadySubscription = readySubscription
+                ? await this.externalVlessService.resolveReadySubscriptionSelectionInput(
+                      readySubscription,
+                  )
+                : null;
 
             const hostEntity = new HostsEntity({
                 ...rest,
@@ -105,14 +110,17 @@ export class HostsService {
                 xHttpExtraParams,
                 muxParams,
                 sockoptParams,
-                configProfileUuid: configProfile.response.uuid,
-                configProfileInboundUuid: configProfileInbound.uuid,
+                configProfileUuid: inboundResolution.response.configProfileUuid,
+                configProfileInboundUuid: inboundResolution.response.configProfileInboundUuid,
                 serverDescription,
             });
 
             const result = await this.hostsRepository.create(hostEntity);
 
-            if (nodes !== undefined && nodes.length > 0) {
+            const isReadySubscriptionHost =
+                sourceType === 'READY_SUBSCRIPTION' || resolvedReadySubscription !== null;
+
+            if (!isReadySubscriptionHost && nodes !== undefined && nodes.length > 0) {
                 await this.hostsRepository.addNodesToHost(result.uuid, nodes);
                 result.nodes = nodes.map((node) => {
                     return {
@@ -133,7 +141,16 @@ export class HostsService {
                 });
             }
 
-            return ok(result);
+            if (resolvedReadySubscription) {
+                await this.hostsRepository.setReadySubscriptionHost(
+                    result.uuid,
+                    resolvedReadySubscription,
+                );
+            }
+
+            const [hydratedHost] = await this.attachReadySubscriptionData([result]);
+
+            return ok(hydratedHost);
         } catch (error) {
             this.logger.error(error);
 
@@ -143,10 +160,21 @@ export class HostsService {
 
     public async updateHost(dto: UpdateHostRequestDto): Promise<TResult<HostsEntity>> {
         try {
-            const { inbound: inboundObj, nodes, excludedInternalSquads, ...rest } = dto;
+            const {
+                inbound: inboundObj,
+                nodes,
+                excludedInternalSquads,
+                readySubscription,
+                sourceType,
+                ...rest
+            } = dto;
 
             const host = await this.hostsRepository.findByUUID(dto.uuid);
             if (!host) return fail(ERRORS.HOST_NOT_FOUND);
+
+            const existingReadySubscription = (
+                await this.hostsRepository.findReadySubscriptionHostsByHostUuids([host.uuid])
+            )[0];
 
             if (dto.xrayJsonTemplateUuid) {
                 const xrayJsonTemplate = await this.queryBus.execute(
@@ -209,27 +237,32 @@ export class HostsService {
             let configProfileUuid: string | undefined;
             let configProfileInboundUuid: string | undefined;
             if (inboundObj) {
-                const configProfile = await this.queryBus.execute(
-                    new GetConfigProfileByUuidQuery(inboundObj.configProfileUuid),
-                );
-
-                if (!configProfile.isOk) {
-                    return fail(ERRORS.CONFIG_PROFILE_NOT_FOUND);
+                const inboundResolution = await this.resolveInbound(inboundObj);
+                if (!inboundResolution.isOk) {
+                    return inboundResolution;
                 }
 
-                const configProfileInbound = configProfile.response.inbounds.find(
-                    (inbound) => inbound.uuid === inboundObj.configProfileInboundUuid,
-                );
-
-                if (!configProfileInbound) {
-                    return fail(ERRORS.CONFIG_PROFILE_INBOUND_NOT_FOUND_IN_SPECIFIED_PROFILE);
-                }
-
-                configProfileUuid = configProfile.response.uuid;
-                configProfileInboundUuid = configProfileInbound.uuid;
+                configProfileUuid = inboundResolution.response.configProfileUuid;
+                configProfileInboundUuid = inboundResolution.response.configProfileInboundUuid;
             }
 
-            if (nodes !== undefined) {
+            const resolvedReadySubscription = readySubscription?.selectedNodes
+                ? await this.externalVlessService.resolveReadySubscriptionSelectionInput(
+                      {
+                          ...readySubscription,
+                          selectedNodes: readySubscription.selectedNodes,
+                      },
+                  )
+                : null;
+
+            const isReadySubscriptionHost =
+                sourceType === 'READY_SUBSCRIPTION' ||
+                resolvedReadySubscription !== null ||
+                Boolean(existingReadySubscription);
+
+            if (isReadySubscriptionHost) {
+                await this.hostsRepository.clearNodesFromHost(host.uuid);
+            } else if (nodes !== undefined) {
                 await this.hostsRepository.clearNodesFromHost(host.uuid);
                 await this.hostsRepository.addNodesToHost(host.uuid, nodes);
             }
@@ -253,7 +286,18 @@ export class HostsService {
                 serverDescription,
             });
 
-            return ok(result);
+            if (resolvedReadySubscription) {
+                await this.hostsRepository.setReadySubscriptionHost(
+                    result.uuid,
+                    resolvedReadySubscription,
+                );
+            } else if (existingReadySubscription && sourceType === 'MANUAL') {
+                await this.hostsRepository.deleteReadySubscriptionHost(result.uuid);
+            }
+
+            const [hydratedHost] = await this.attachReadySubscriptionData([result]);
+
+            return ok(hydratedHost);
         } catch (error) {
             this.logger.error(error);
 
@@ -281,7 +325,7 @@ export class HostsService {
         try {
             const result = await this.hostsRepository.findAll();
 
-            return ok(result);
+            return ok(await this.attachReadySubscriptionData(result));
         } catch (error) {
             this.logger.error(JSON.stringify(error));
             return fail(ERRORS.GET_ALL_HOSTS_ERROR);
@@ -296,7 +340,9 @@ export class HostsService {
                 return fail(ERRORS.HOST_NOT_FOUND);
             }
 
-            return ok(result);
+            const [hydratedHost] = await this.attachReadySubscriptionData([result]);
+
+            return ok(hydratedHost);
         } catch (error) {
             this.logger.error(error);
             return fail(ERRORS.GET_ONE_HOST_ERROR);
@@ -440,5 +486,55 @@ export class HostsService {
             this.logger.error(error);
             return fail(ERRORS.GET_ALL_HOST_TAGS_ERROR);
         }
+    }
+
+    private async resolveInbound(inboundObj: {
+        configProfileInboundUuid: string;
+        configProfileUuid: string;
+    }): Promise<
+        TResult<{
+            configProfileInboundUuid: string;
+            configProfileUuid: string;
+        }>
+    > {
+        const configProfile = await this.queryBus.execute(
+            new GetConfigProfileByUuidQuery(inboundObj.configProfileUuid),
+        );
+
+        if (!configProfile.isOk) {
+            return fail(ERRORS.CONFIG_PROFILE_NOT_FOUND);
+        }
+
+        const configProfileInbound = configProfile.response.inbounds.find(
+            (inbound) => inbound.uuid === inboundObj.configProfileInboundUuid,
+        );
+        if (!configProfileInbound) {
+            return fail(ERRORS.CONFIG_PROFILE_INBOUND_NOT_FOUND_IN_SPECIFIED_PROFILE);
+        }
+
+        return ok({
+            configProfileUuid: configProfile.response.uuid,
+            configProfileInboundUuid: configProfileInbound.uuid,
+        });
+    }
+
+    private async attachReadySubscriptionData(hosts: HostsEntity[]): Promise<HostsEntity[]> {
+        if (hosts.length === 0) {
+            return hosts;
+        }
+
+        const readySubscriptions = await this.hostsRepository.findReadySubscriptionHostsByHostUuids(
+            hosts.map((host) => host.uuid),
+        );
+        const readyStateMap =
+            await this.externalVlessService.buildReadySubscriptionStates(readySubscriptions);
+
+        return hosts.map((host) => {
+            const readySubscription = readyStateMap.get(host.uuid) || null;
+            host.sourceType = readySubscription ? 'READY_SUBSCRIPTION' : 'MANUAL';
+            host.readySubscription = readySubscription;
+
+            return host;
+        });
     }
 }

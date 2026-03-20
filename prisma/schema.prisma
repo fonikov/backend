@@ -301,6 +301,7 @@ model Hosts {
 
   nodes                  HostsToNodes[]
   excludedInternalSquads InternalSquadHostExclusions[]
+  readySubscriptionHost  ReadySubscriptionHost?
 
   @@map("hosts")
 }
@@ -593,9 +594,43 @@ model ExternalVlessPreset {
   createdAt DateTime @default(dbgenerated("now()")) @map("created_at")
   updatedAt DateTime @default(dbgenerated("now()")) @updatedAt @map("updated_at")
 
-  nodes ExternalVlessNode[]
+  nodes      ExternalVlessNode[]
+  readyHosts ReadySubscriptionHost[]
 
   @@map("external_vless_presets")
+}
+
+model ReadySubscriptionHost {
+  hostUuid        String  @id @map("host_uuid") @db.Uuid
+  presetUuid      String  @map("preset_uuid") @db.Uuid
+  autoReplace     Boolean @default(true) @map("auto_replace")
+  activeNodeLimit Int     @default(1) @map("active_node_limit")
+
+  createdAt DateTime @default(dbgenerated("now()")) @map("created_at")
+  updatedAt DateTime @default(dbgenerated("now()")) @updatedAt @map("updated_at")
+
+  host   Hosts               @relation(fields: [hostUuid], references: [uuid], onDelete: Cascade)
+  preset ExternalVlessPreset @relation(fields: [presetUuid], references: [uuid], onDelete: Cascade)
+  nodes  ReadySubscriptionHostNode[]
+
+  @@index([presetUuid])
+  @@map("ready_subscription_hosts")
+}
+
+model ReadySubscriptionHostNode {
+  hostUuid      String @map("host_uuid") @db.Uuid
+  dedupeKey     String @map("dedupe_key") @db.VarChar(64)
+  isPinned      Boolean @default(false) @map("is_pinned")
+  viewPosition  Int    @default(autoincrement()) @map("view_position")
+
+  createdAt DateTime @default(dbgenerated("now()")) @map("created_at")
+  updatedAt DateTime @default(dbgenerated("now()")) @updatedAt @map("updated_at")
+
+  host ReadySubscriptionHost @relation(fields: [hostUuid], references: [hostUuid], onDelete: Cascade)
+
+  @@id([hostUuid, dedupeKey])
+  @@index([hostUuid, viewPosition])
+  @@map("ready_subscription_host_nodes")
 }
 
 model ExternalVlessNode {
