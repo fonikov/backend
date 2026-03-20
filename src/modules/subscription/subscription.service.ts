@@ -49,7 +49,11 @@ import {
     SubscriptionRawResponse,
     SubscriptionWithConfigResponse,
 } from './models';
-import { getSubscriptionRefillDate, getSubscriptionUserInfo } from './utils/get-user-info.headers';
+import {
+    getMaskedSubscriptionUserInfo,
+    getSubscriptionRefillDate,
+    getSubscriptionUserInfo,
+} from './utils/get-user-info.headers';
 import { GetSubpageConfigResponseModel } from './models/get-subpage-config.response.model';
 import { GetHostsForUserQuery } from '../hosts/queries/get-hosts-for-user';
 import { ISubscriptionHeaders, IGetSubscriptionInfo } from './interfaces';
@@ -666,11 +670,13 @@ export class SubscriptionService {
             'profile-update-interval': settings.profileUpdateInterval.toString(),
         };
 
-        if (isSubscriptionUserInfoEnabled) {
-            headers['subscription-userinfo'] = Object.entries(getSubscriptionUserInfo(user))
-                .map(([key, val]) => `${key}=${val}`)
-                .join('; ');
-        }
+        headers['subscription-userinfo'] = Object.entries(
+            isSubscriptionUserInfoEnabled
+                ? getSubscriptionUserInfo(user)
+                : getMaskedSubscriptionUserInfo(user),
+        )
+            .map(([key, val]) => `${key}=${val}`)
+            .join('; ');
 
         if (settings.happAnnounce) {
             headers.announce = `base64:${Buffer.from(

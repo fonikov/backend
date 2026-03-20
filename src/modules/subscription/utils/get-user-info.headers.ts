@@ -21,6 +21,15 @@ export function getSubscriptionUserInfo(user: UserEntity): SubscriptionUserInfo 
     };
 }
 
+export function getMaskedSubscriptionUserInfo(user: UserEntity): SubscriptionUserInfo {
+    return {
+        upload: 0,
+        download: 0,
+        total: 0,
+        expire: user.expireAt.getFullYear() !== 2099 ? dayjs(user.expireAt).unix() : 0,
+    };
+}
+
 export function getSubscriptionRefillDate(trafficLimitStrategy: TResetPeriods): string | undefined {
     const now = new Date();
 

@@ -1,6 +1,8 @@
 import { lookup } from 'node:dns/promises';
 import { createHash } from 'node:crypto';
+import { request as httpsRequest } from 'node:https';
 import { isIP, Socket } from 'node:net';
+import { connect as tlsConnect } from 'node:tls';
 
 import axios from 'axios';
 import geoip from 'geoip-lite';
@@ -130,6 +132,17 @@ type ReadySubscriptionRelationRecord = {
         uniqueCountries: boolean;
         uuid: string;
     };
+};
+
+type ProbeTarget = {
+    address: string;
+    authority?: null | string;
+    host?: null | string;
+    network?: null | string;
+    path?: null | string;
+    port: null | number;
+    security?: null | string;
+    sni?: null | string;
 };
 
 const WHITE_SOURCE_URLS = [
@@ -296,6 +309,13 @@ export class ExternalVlessService implements OnModuleInit {
             },
             select: {
                 address: true,
+                authority: true,
+                host: true,
+                network: true,
+                path: true,
+                port: true,
+                security: true,
+                sni: true,
                 uuid: true,
             },
         });
@@ -303,7 +323,7 @@ export class ExternalVlessService implements OnModuleInit {
         await pMap(
             nodes,
             async (node) => {
-                const health = await this.getNodeHealth(node.address, null);
+                const health = await this.getNodeHealth(node);
                 await this.prisma.tx.externalVlessNode.update({
                     where: {
                         uuid: node.uuid,
@@ -358,7 +378,7 @@ export class ExternalVlessService implements OnModuleInit {
         const probedNodes = await pMap(
             parsedNodes,
             async (node) => {
-                const health = await this.getNodeHealth(node.address, node.port);
+                const health = await this.getNodeHealth(node);
 
                 return {
                     ...node,
@@ -521,7 +541,7 @@ export class ExternalVlessService implements OnModuleInit {
         }
 
         const parsed = this.parseSingleUri(body.rawUri, 0);
-        const health = await this.getNodeHealth(parsed.address, parsed.port);
+        const health = await this.getNodeHealth(parsed);
 
         return this.prisma.tx.externalVlessNode.create({
             data: {
@@ -949,7 +969,6 @@ export class ExternalVlessService implements OnModuleInit {
         const enabledPool = presetPool
             .filter((node) => node.isEnabled)
             .sort((a, b) => this.compareNodes(a, b));
-        const enabledSelectedDedupeKeys = new Set(enabledPool.map((node) => node.dedupeKey));
         const replacementPool = enabledPool.filter((node) => !selectedDedupeKeys.has(node.dedupeKey));
         const usedReplacementDedupeKeys = new Set<string>();
         const activeNodes: ReadySubscriptionResolvedNode[] = [];
@@ -994,10 +1013,6 @@ export class ExternalVlessService implements OnModuleInit {
         for (const selectedNode of selectedNodes) {
             if (activeNodes.length >= relation.activeNodeLimit) {
                 break;
-            }
-
-            if (!enabledSelectedDedupeKeys.has(selectedNode.dedupeKey)) {
-                continue;
             }
 
             if (selectedNode.isAlive || !relation.autoReplace) {
@@ -1326,19 +1341,16 @@ export class ExternalVlessService implements OnModuleInit {
         };
     }
 
-    private async getNodeHealth(
-        address: string,
-        port: null | number,
-    ): Promise<{
+    private async getNodeHealth(target: ProbeTarget): Promise<{
         countryCode: null | string;
         countryName: null | string;
         isAlive: boolean;
         latencyMs: null | number;
         resolvedAddress: null | string;
     }> {
-        const resolvedAddress = await this.resolveAddress(address);
+        const resolvedAddress = await this.resolveAddress(target.address);
         const geoData = resolvedAddress ? geoip.lookup(resolvedAddress) : null;
-        const latencyMs = port ? await this.probeLatency(address, port) : null;
+        const latencyMs = target.port ? await this.probeLatency(target) : null;
 
         return {
             countryCode: geoData?.country || null,
@@ -1407,7 +1419,28 @@ export class ExternalVlessService implements OnModuleInit {
         return [...tags];
     }
 
-    private async probeLatency(address: string, port: number): Promise<null | number> {
+    private async probeLatency(target: ProbeTarget): Promise<null | number> {
+        const security = (target.security || 'none').toLowerCase();
+        const network = (target.network || 'tcp').toLowerCase();
+
+        if (security === 'tls' && ['httpupgrade', 'ws', 'xhttp'].includes(network)) {
+            const latency = await this.probeHttpsLatency(target);
+            if (latency !== null) {
+                return latency;
+            }
+        }
+
+        if (security === 'tls') {
+            const latency = await this.probeTlsLatency(target);
+            if (latency !== null) {
+                return latency;
+            }
+        }
+
+        return this.probeTcpLatency(target.address, target.port!);
+    }
+
+    private async probeTcpLatency(address: string, port: number): Promise<null | number> {
         return new Promise((resolve) => {
             const socket = new Socket();
             const startedAt = Date.now();
@@ -1427,10 +1460,99 @@ export class ExternalVlessService implements OnModuleInit {
             socket.once('connect', () => finish(Date.now() - startedAt));
             socket.once('timeout', () => finish(null));
             socket.once('error', (error) => {
-                this.logger.debug(`Probe failed for ${address}:${port} - ${String(error)}`);
+                this.logger.debug(`TCP probe failed for ${address}:${port} - ${String(error)}`);
                 finish(null);
             });
             socket.connect(port, address);
+        });
+    }
+
+    private async probeTlsLatency(target: ProbeTarget): Promise<null | number> {
+        return new Promise((resolve) => {
+            const startedAt = Date.now();
+            const servername = target.sni || target.host || target.authority || undefined;
+            const socket = tlsConnect({
+                host: target.address,
+                port: target.port!,
+                rejectUnauthorized: false,
+                servername,
+                timeout: 6000,
+            });
+            let settled = false;
+
+            const finish = (value: null | number) => {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                socket.destroy();
+                resolve(value);
+            };
+
+            socket.once('secureConnect', () => finish(Date.now() - startedAt));
+            socket.once('timeout', () => finish(null));
+            socket.once('error', (error) => {
+                this.logger.debug(
+                    `TLS probe failed for ${target.address}:${target.port} - ${String(error)}`,
+                );
+                finish(null);
+            });
+        });
+    }
+
+    private async probeHttpsLatency(target: ProbeTarget): Promise<null | number> {
+        return new Promise((resolve) => {
+            const startedAt = Date.now();
+            const servername = target.sni || target.host || target.authority || undefined;
+            const hostHeader = target.host || target.authority || servername;
+            const normalizedPath = target.path
+                ? target.path.startsWith('/')
+                    ? target.path
+                    : `/${target.path}`
+                : '/';
+            let settled = false;
+
+            const finish = (value: null | number) => {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                resolve(value);
+            };
+
+            const request = httpsRequest(
+                {
+                    headers: hostHeader ? { Host: hostHeader } : undefined,
+                    host: target.address,
+                    method: 'HEAD',
+                    path: normalizedPath,
+                    port: target.port!,
+                    rejectUnauthorized: false,
+                    servername,
+                    timeout: 6000,
+                },
+                (response) => {
+                    response.resume();
+                    finish(Date.now() - startedAt);
+                },
+            );
+
+            request.once('socket', (socket) => {
+                socket.once('secureConnect', () => finish(Date.now() - startedAt));
+            });
+            request.once('timeout', () => {
+                request.destroy();
+                finish(null);
+            });
+            request.once('error', (error) => {
+                this.logger.debug(
+                    `HTTPS probe failed for ${target.address}:${target.port} - ${String(error)}`,
+                );
+                finish(null);
+            });
+            request.end();
         });
     }
 }
