@@ -2,6 +2,7 @@ import { CqrsModule } from '@nestjs/cqrs';
 import { Module } from '@nestjs/common';
 
 import { SubscriptionSettingsRepository } from './repositories/subscription-settings.repository';
+import { PublicSupportController } from './public-support.controller';
 import { SubscriptionSettingsController } from './subscription-settings.controller';
 import { SubscriptionSettingsConverter } from './subscription-settings.converter';
 import { SubscriptionSettingsService } from './subscription-settings.service';
@@ -9,7 +10,7 @@ import { QUERIES } from './queries';
 
 @Module({
     imports: [CqrsModule],
-    controllers: [SubscriptionSettingsController],
+    controllers: [SubscriptionSettingsController, PublicSupportController],
     providers: [
         SubscriptionSettingsService,
         SubscriptionSettingsRepository,
