@@ -1247,10 +1247,7 @@ export class ExternalVlessService implements OnModuleInit {
         requiredSecurity: null | string,
         sourceOffset: number,
     ): ParsedExternalVless[] {
-        return source
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter((line) => line.startsWith('vless://'))
+        return this.extractVlessUris(source)
             .map((line, index) => this.parseSingleUri(line, sourceOffset + index))
             .filter((node) => {
                 if (requiredSecurity && node.security !== requiredSecurity) {
@@ -1265,6 +1262,15 @@ export class ExternalVlessService implements OnModuleInit {
                     node.remarkTags.includes(keyword.toUpperCase()),
                 );
             });
+    }
+
+    private extractVlessUris(source: string): string[] {
+        return source
+            .replace(/\r/g, '\n')
+            .split(/(?=vless:\/\/)/g)
+            .map((chunk) => chunk.trim())
+            .filter((chunk) => chunk.startsWith('vless://'))
+            .map((chunk) => chunk.replace(/[\u0000-\u001F]+$/g, ''));
     }
 
     private parseSingleUri(rawUri: string, sourcePosition: number): ParsedExternalVless {
