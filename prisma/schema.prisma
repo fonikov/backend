@@ -603,7 +603,7 @@ model ExternalVlessPreset {
 model ReadySubscriptionHost {
   hostUuid        String  @id @map("host_uuid") @db.Uuid
   presetUuid      String  @map("preset_uuid") @db.Uuid
-  autoReplace     Boolean @default(true) @map("auto_replace")
+  autoReplace     Boolean @default(false) @map("auto_replace")
   activeNodeLimit Int     @default(1) @map("active_node_limit")
 
   createdAt DateTime @default(dbgenerated("now()")) @map("created_at")

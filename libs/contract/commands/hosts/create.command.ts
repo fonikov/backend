@@ -12,7 +12,7 @@ import { HostsSchema } from '../../models';
 
 const ReadySubscriptionRequestSchema = z.object({
     presetUuid: z.string().uuid(),
-    autoReplace: z.boolean().optional().default(true),
+    autoReplace: z.boolean().optional().default(false),
     activeNodeLimit: z.number().int().min(1).max(10).optional().default(1),
     selectedNodes: z
         .array(

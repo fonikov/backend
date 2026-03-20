@@ -729,7 +729,7 @@ export class ExternalVlessService implements OnModuleInit {
 
         return {
             presetUuid: input.presetUuid,
-            autoReplace: input.autoReplace ?? true,
+            autoReplace: input.autoReplace ?? false,
             activeNodeLimit: Math.max(
                 1,
                 Math.min(10, input.activeNodeLimit ?? normalizedSelectedNodes.length),
