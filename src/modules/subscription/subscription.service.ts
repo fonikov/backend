@@ -50,7 +50,7 @@ import {
     SubscriptionWithConfigResponse,
 } from './models';
 import {
-    getMaskedSubscriptionUserInfo,
+    getExpireOnlySubscriptionUserInfo,
     getSubscriptionRefillDate,
     getSubscriptionUserInfo,
 } from './utils/get-user-info.headers';
@@ -702,7 +702,7 @@ export class SubscriptionService {
                 headers['subscription-refill-date'] = refillDate;
             }
         } else if (isSubscriptionUserInfoExpireOnly) {
-            headers['subscription-userinfo'] = Object.entries(getMaskedSubscriptionUserInfo(user))
+            headers['subscription-userinfo'] = Object.entries(getExpireOnlySubscriptionUserInfo(user))
                 .map(([key, val]) => `${key}=${val}`)
                 .join('; ');
         }

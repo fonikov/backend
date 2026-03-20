@@ -11,6 +11,10 @@ interface SubscriptionUserInfo {
     upload: number;
 }
 
+interface SubscriptionExpireOnlyInfo {
+    expire: number;
+}
+
 export function getSubscriptionUserInfo(user: UserEntity): SubscriptionUserInfo {
     return {
         upload: 0,
@@ -26,6 +30,12 @@ export function getMaskedSubscriptionUserInfo(user: UserEntity): SubscriptionUse
         upload: 0,
         download: 0,
         total: 0,
+        expire: user.expireAt.getFullYear() !== 2099 ? dayjs(user.expireAt).unix() : 0,
+    };
+}
+
+export function getExpireOnlySubscriptionUserInfo(user: UserEntity): SubscriptionExpireOnlyInfo {
+    return {
         expire: user.expireAt.getFullYear() !== 2099 ? dayjs(user.expireAt).unix() : 0,
     };
 }
