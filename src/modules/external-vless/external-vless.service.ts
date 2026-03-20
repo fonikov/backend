@@ -188,7 +188,7 @@ const WHITE_SOURCE_URLS = [
 const GOIDA_MIRROR_SOURCE_URLS = Array.from(
     { length: 26 },
     (_, index) =>
-        `https://github.com/AvenCores/goida-vpn-configs/raw/refs/heads/main/githubmirror/${index + 1}.txt`,
+        `https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/githubmirror/${index + 1}.txt`,
 );
 
 const DEFAULT_PRESETS: ExternalPresetSeed[] = [
@@ -440,17 +440,28 @@ export class ExternalVlessService implements OnModuleInit {
                     timeout: 20000,
                 });
 
-                return this.parseSource(
+                const parsed = this.parseSource(
                     response.data,
                     preset.includeKeywords,
                     preset.requiredSecurity,
                     sourceIndex * 10_000,
                 );
+
+                if (parsed.length === 0) {
+                    this.logger.warn(
+                        `External preset source parsed 0 nodes: ${preset.slug} <- ${sourceUrl}`,
+                    );
+                }
+
+                return parsed;
             },
             { concurrency: 3 },
         );
 
         const parsedNodes = this.dedupeNodes(fetchedSources.flat());
+        this.logger.log(
+            `External preset ${preset.slug}: ${parsedNodes.length} deduped nodes from ${preset.sourceUrls.length} sources`,
+        );
         const healthChecks = await this.getNodeHealthBatch(parsedNodes);
 
         const probedNodes = parsedNodes.map((node, index) => {
