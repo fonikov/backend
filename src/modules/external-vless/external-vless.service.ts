@@ -182,6 +182,12 @@ const WHITE_SOURCE_URLS = [
     'https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/githubmirror/26.txt',
 ];
 
+const GOIDA_MIRROR_SOURCE_URLS = Array.from(
+    { length: 26 },
+    (_, index) =>
+        `https://github.com/AvenCores/goida-vpn-configs/raw/refs/heads/main/githubmirror/${index + 1}.txt`,
+);
+
 const DEFAULT_PRESETS: ExternalPresetSeed[] = [
     {
         slug: 'auto-black',
@@ -214,6 +220,16 @@ const DEFAULT_PRESETS: ExternalPresetSeed[] = [
         requiredSecurity: 'reality',
         selectionLimit: 5,
         countryMode: 'NON_RU_ONLY',
+        uniqueCountries: false,
+    },
+    {
+        slug: 'mirror-mixed-hub',
+        name: 'Mirror Mixed Hub',
+        sourceUrls: GOIDA_MIRROR_SOURCE_URLS,
+        includeKeywords: [],
+        requiredSecurity: null,
+        selectionLimit: 50,
+        countryMode: 'ANY',
         uniqueCountries: false,
     },
 ];
@@ -1300,6 +1316,8 @@ export class ExternalVlessService implements OnModuleInit {
                 return ['WHITE-RU'];
             case 'auto-white-foreign-ip':
                 return ['WHITE-FOREIGN'];
+            case 'mirror-mixed-hub':
+                return ['MIRROR'];
             default:
                 return ['EXTERNAL'];
         }
@@ -1341,7 +1359,8 @@ export class ExternalVlessService implements OnModuleInit {
         requiredSecurity: null | string,
         sourceOffset: number,
     ): ParsedExternalVless[] {
-        return this.extractVlessUris(source)
+        return this.expandSourcePayloads(source)
+            .flatMap((payload) => this.extractVlessUris(payload))
             .map((line, index) => this.parseSingleUri(line, sourceOffset + index))
             .filter((node) => {
                 if (requiredSecurity && node.security !== requiredSecurity) {
@@ -1358,17 +1377,50 @@ export class ExternalVlessService implements OnModuleInit {
             });
     }
 
+    private expandSourcePayloads(source: string): string[] {
+        const normalized = this.decodeHtmlEntities(source).replace(/\r\n?/g, '\n').trim();
+        const payloads = new Set<string>();
+
+        if (normalized) {
+            payloads.add(normalized);
+        }
+
+        const compact = normalized.replace(/\s+/g, '');
+        if (!compact || normalized.includes('vless://')) {
+            return [...payloads];
+        }
+
+        if (!/^[A-Za-z0-9+/=_-]+$/.test(compact) || compact.length < 32) {
+            return [...payloads];
+        }
+
+        for (const candidate of [compact, compact.replace(/-/g, '+').replace(/_/g, '/')]) {
+            try {
+                const decoded = Buffer.from(candidate, 'base64').toString('utf8').trim();
+
+                if (decoded.includes('vless://')) {
+                    payloads.add(this.decodeHtmlEntities(decoded));
+                }
+            } catch {
+                continue;
+            }
+        }
+
+        return [...payloads];
+    }
+
     private extractVlessUris(source: string): string[] {
         return source
             .replace(/\r/g, '\n')
             .split(/(?=vless:\/\/)/g)
             .map((chunk) => chunk.trim())
             .filter((chunk) => chunk.startsWith('vless://'))
-            .map((chunk) => chunk.replace(/[\u0000-\u001F]+$/g, ''));
+            .map((chunk) => this.normalizeRawUri(chunk))
+            .filter(Boolean);
     }
 
     private parseSingleUri(rawUri: string, sourcePosition: number): ParsedExternalVless {
-        const url = new URL(rawUri);
+        const url = new URL(this.normalizeRawUri(rawUri));
         const params = url.searchParams;
         const decodedRemark = this.decodeRemark(url.hash.replace(/^#/, ''));
         const host = params.get('host') || '';
@@ -1418,6 +1470,44 @@ export class ExternalVlessService implements OnModuleInit {
             sourcePosition,
             spiderX: params.get('spx') || params.get('spiderX') || '',
         };
+    }
+
+    private decodeHtmlEntities(input: string): string {
+        return input
+            .replace(/&amp;/gi, '&')
+            .replace(/&#38;/gi, '&')
+            .replace(/&quot;/gi, '"')
+            .replace(/&#34;/gi, '"')
+            .replace(/&apos;/gi, "'")
+            .replace(/&#39;/gi, "'")
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>');
+    }
+
+    private normalizeRawUri(rawUri: string): string {
+        let normalized = this.decodeHtmlEntities(rawUri)
+            .replace(/[\r\n\t]+/g, ' ')
+            .trim();
+        const vlessIndex = normalized.indexOf('vless://');
+
+        if (vlessIndex >= 0) {
+            normalized = normalized.slice(vlessIndex);
+        }
+
+        const [beforeHash, ...hashParts] = normalized.split('#');
+        const beforeHashTrimmed = beforeHash.split(/[<>"']/)[0]?.trim() || beforeHash.trim();
+
+        if (hashParts.length === 0) {
+            return beforeHashTrimmed.split(/\s+/)[0] || beforeHashTrimmed;
+        }
+
+        const sanitizedHash = hashParts
+            .join('#')
+            .split(/[<>"']/)[0]
+            ?.trim()
+            .split(/\s+/)[0];
+
+        return `${beforeHashTrimmed}#${sanitizedHash || ''}`.trim();
     }
 
     private async getNodeHealth(target: ProbeTarget): Promise<NodeHealth> {
