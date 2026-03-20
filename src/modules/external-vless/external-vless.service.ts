@@ -1422,22 +1422,22 @@ export class ExternalVlessService implements OnModuleInit {
     private async probeLatency(target: ProbeTarget): Promise<null | number> {
         const security = (target.security || 'none').toLowerCase();
         const network = (target.network || 'tcp').toLowerCase();
+        const probes: Promise<null | number>[] = [this.probeTcpLatency(target.address, target.port!)];
 
         if (security === 'tls' && ['httpupgrade', 'ws', 'xhttp'].includes(network)) {
-            const latency = await this.probeHttpsLatency(target);
-            if (latency !== null) {
-                return latency;
-            }
+            probes.push(this.probeHttpsLatency(target));
+        } else if (security === 'tls') {
+            probes.push(this.probeTlsLatency(target));
         }
 
-        if (security === 'tls') {
-            const latency = await this.probeTlsLatency(target);
-            if (latency !== null) {
-                return latency;
-            }
+        const results = await Promise.all(probes);
+        const successful = results.filter((latency): latency is number => latency !== null);
+
+        if (successful.length === 0) {
+            return null;
         }
 
-        return this.probeTcpLatency(target.address, target.port!);
+        return Math.min(...successful);
     }
 
     private async probeTcpLatency(address: string, port: number): Promise<null | number> {
