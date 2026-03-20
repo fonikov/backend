@@ -173,6 +173,9 @@ type ProbeLatencyResult = {
     transportProbe: string;
 };
 
+const REMOTE_PROBE_BATCH_SIZE = 25;
+const REMOTE_PROBE_BATCH_CONCURRENCY = 4;
+
 const WHITE_SOURCE_URLS = [
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt',
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt',
@@ -538,6 +541,7 @@ export class ExternalVlessService implements OnModuleInit {
                             transportProbe: node.transportProbe,
                         };
                     }),
+                    skipDuplicates: true,
                 });
             }
 
@@ -1555,20 +1559,14 @@ export class ExternalVlessService implements OnModuleInit {
         }
 
         try {
-            const response = await axios.post<{
-                results?: Array<{
-                    id?: string;
-                    latencyMs?: null | number;
-                    resolvedAddress?: null | string;
-                    tcpLatencyMs?: null | number;
-                    transportLatencyMs?: null | number;
-                    transportProbe?: string;
-                }>;
-            }>(
-                remoteProbeUrl,
-                {
-                    targets: targets.map((target, index) => ({
-                        id: String(index),
+            const chunkedTargets = Array.from(
+                { length: Math.ceil(targets.length / REMOTE_PROBE_BATCH_SIZE) },
+                (_, chunkIndex) => {
+                    const start = chunkIndex * REMOTE_PROBE_BATCH_SIZE;
+                    const chunk = targets.slice(start, start + REMOTE_PROBE_BATCH_SIZE);
+
+                    return chunk.map((target, chunkOffset) => ({
+                        id: String(start + chunkOffset),
                         address: target.address,
                         authority: target.authority,
                         host: target.host,
@@ -1577,32 +1575,55 @@ export class ExternalVlessService implements OnModuleInit {
                         port: target.port,
                         security: target.security,
                         sni: target.sni,
-                    })),
-                    timeoutMs: this.remoteProbeTimeoutMs,
+                    }));
                 },
-                {
-                    headers: {
-                        Authorization: `Bearer ${remoteProbeToken}`,
-                    },
-                    timeout: this.remoteProbeTimeoutMs + 2000,
-                },
+            );
+
+            const responses = await pMap(
+                chunkedTargets,
+                async (chunk) =>
+                    axios.post<{
+                        results?: Array<{
+                            id?: string;
+                            latencyMs?: null | number;
+                            resolvedAddress?: null | string;
+                            tcpLatencyMs?: null | number;
+                            transportLatencyMs?: null | number;
+                            transportProbe?: string;
+                        }>;
+                    }>(
+                        remoteProbeUrl,
+                        {
+                            targets: chunk,
+                            timeoutMs: this.remoteProbeTimeoutMs,
+                        },
+                        {
+                            headers: {
+                                Authorization: `Bearer ${remoteProbeToken}`,
+                            },
+                            timeout: this.remoteProbeTimeoutMs + 2000,
+                        },
+                    ),
+                { concurrency: REMOTE_PROBE_BATCH_CONCURRENCY },
             );
 
             const results = new Map<number, ProbeLatencyResult>();
 
-            for (const result of response.data.results || []) {
-                if (!result.id || !/^\d+$/.test(result.id)) {
-                    continue;
-                }
+            for (const response of responses) {
+                for (const result of response.data.results || []) {
+                    if (!result.id || !/^\d+$/.test(result.id)) {
+                        continue;
+                    }
 
-                const index = Number(result.id);
-                results.set(index, {
-                    latencyMs: result.latencyMs ?? null,
-                    resolvedAddress: result.resolvedAddress ?? null,
-                    tcpLatencyMs: result.tcpLatencyMs ?? null,
-                    transportLatencyMs: result.transportLatencyMs ?? null,
-                    transportProbe: result.transportProbe || 'NONE',
-                });
+                    const index = Number(result.id);
+                    results.set(index, {
+                        latencyMs: result.latencyMs ?? null,
+                        resolvedAddress: result.resolvedAddress ?? null,
+                        tcpLatencyMs: result.tcpLatencyMs ?? null,
+                        transportLatencyMs: result.transportLatencyMs ?? null,
+                        transportProbe: result.transportProbe || 'NONE',
+                    });
+                }
             }
 
             return results;

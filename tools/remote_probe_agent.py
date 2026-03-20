@@ -4,6 +4,7 @@ import os
 import socket
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import quote
@@ -13,6 +14,7 @@ LISTEN_HOST = os.environ.get("PROBE_AGENT_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("PROBE_AGENT_PORT", "8787"))
 BEARER_TOKEN = os.environ.get("PROBE_AGENT_TOKEN", "").strip()
 DEFAULT_TIMEOUT_MS = int(os.environ.get("PROBE_AGENT_TIMEOUT_MS", "6000"))
+MAX_WORKERS = int(os.environ.get("PROBE_AGENT_MAX_WORKERS", "32"))
 
 
 def resolve_address(address: str) -> str | None:
@@ -204,7 +206,9 @@ class Handler(BaseHTTPRequestHandler):
             else DEFAULT_TIMEOUT_MS
         )
 
-        results = [probe_target(target, timeout_ms) for target in targets if isinstance(target, dict)]
+        normalized_targets = [target for target in targets if isinstance(target, dict)]
+        with ThreadPoolExecutor(max_workers=max(1, min(MAX_WORKERS, len(normalized_targets) or 1))) as executor:
+            results = list(executor.map(lambda target: probe_target(target, timeout_ms), normalized_targets))
         self._send_json(200, {"results": results})
 
     def log_message(self, format: str, *args: Any) -> None:
