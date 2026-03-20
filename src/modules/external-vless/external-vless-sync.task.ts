@@ -16,12 +16,10 @@ export class ExternalVlessSyncTask implements OnApplicationBootstrap {
             return;
         }
 
-        try {
-            this.logger.log('Running initial external VLESS sync on scheduler startup.');
-            await this.externalVlessService.syncAllPresets();
-        } catch (error) {
-            this.logger.error(error);
-        }
+        // Do not block scheduler bootstrap and metrics health endpoint on long-running initial sync.
+        setTimeout(() => {
+            void this.runInitialSync();
+        }, 0);
     }
 
     @Cron(CronExpression.EVERY_HOUR, {
@@ -43,6 +41,15 @@ export class ExternalVlessSyncTask implements OnApplicationBootstrap {
         try {
             this.logger.log('Running external VLESS reprobe.');
             await this.externalVlessService.reprobeAllNodes();
+        } catch (error) {
+            this.logger.error(error);
+        }
+    }
+
+    private async runInitialSync(): Promise<void> {
+        try {
+            this.logger.log('Running initial external VLESS sync on scheduler startup.');
+            await this.externalVlessService.syncAllPresets();
         } catch (error) {
             this.logger.error(error);
         }
