@@ -135,7 +135,9 @@ type ReadySubscriptionRelationRecord = {
 const WHITE_SOURCE_URLS = [
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt',
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt',
+    'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt',
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt',
+    'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt',
 ];
 
 const DEFAULT_PRESETS: ExternalPresetSeed[] = [
@@ -143,6 +145,7 @@ const DEFAULT_PRESETS: ExternalPresetSeed[] = [
         slug: 'auto-black',
         name: 'Auto server BLACK',
         sourceUrls: [
+            'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS.txt',
             'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS_mobile.txt',
         ],
         includeKeywords: ['BL'],
@@ -936,60 +939,125 @@ export class ExternalVlessService implements OnModuleInit {
         presetPool: ExternalNodeRecord[],
         selectedNodes: ReadySubscriptionResolvedNode[],
     ): ReadySubscriptionResolvedNode[] {
-        const seen = new Set<string>();
         const selectedDedupeKeys = new Set(selectedNodes.map((node) => node.dedupeKey));
-        const enabledSelectedDedupeKeys = new Set(
-            presetPool.filter((node) => node.isEnabled).map((node) => node.dedupeKey),
-        );
-
-        const orderedSelectedAlive = selectedNodes.filter(
-            (node) => node.isAlive && enabledSelectedDedupeKeys.has(node.dedupeKey),
-        );
-        const orderedSelectedOffline = selectedNodes.filter(
-            (node) => !node.isAlive && enabledSelectedDedupeKeys.has(node.dedupeKey),
-        );
-
-        const replacementNodes = presetPool
-            .filter((node) => node.isEnabled && !selectedDedupeKeys.has(node.dedupeKey))
-            .sort((a, b) => this.compareNodes(a, b))
-            .map((node) =>
-                this.toResolvedReadyNode(
-                    relation.preset.slug,
-                    node,
-                    node.dedupeKey,
-                    false,
-                    true,
-                ),
-            );
-
-        const orderedReplacementAlive = replacementNodes.filter((node) => node.isAlive);
-        const orderedReplacementOffline = replacementNodes.filter((node) => !node.isAlive);
-
-        const composed = relation.autoReplace
-            ? [
-                  ...orderedSelectedAlive,
-                  ...orderedReplacementAlive,
-                  ...orderedSelectedOffline,
-                  ...orderedReplacementOffline,
-              ]
-            : [...orderedSelectedAlive, ...orderedSelectedOffline];
-
+        const enabledPool = presetPool
+            .filter((node) => node.isEnabled)
+            .sort((a, b) => this.compareNodes(a, b));
+        const enabledSelectedDedupeKeys = new Set(enabledPool.map((node) => node.dedupeKey));
+        const replacementPool = enabledPool.filter((node) => !selectedDedupeKeys.has(node.dedupeKey));
+        const usedReplacementDedupeKeys = new Set<string>();
         const activeNodes: ReadySubscriptionResolvedNode[] = [];
+        const seen = new Set<string>();
 
-        for (const node of composed) {
+        const pushNode = (node: ReadySubscriptionResolvedNode) => {
             if (seen.has(node.dedupeKey)) {
-                continue;
+                return;
             }
 
             seen.add(node.dedupeKey);
             activeNodes.push(node);
+        };
 
+        const takeReplacementFor = (
+            sourceNode: ReadySubscriptionResolvedNode,
+        ): ExternalNodeRecord | null => {
+            const availableAlive = replacementPool.filter(
+                (node) => node.isAlive && !usedReplacementDedupeKeys.has(node.dedupeKey),
+            );
+
+            if (availableAlive.length === 0) {
+                return null;
+            }
+
+            const sourceCountryKey = this.getResolvedCountryKey(sourceNode);
+            let replacement =
+                sourceCountryKey !== null
+                    ? availableAlive.find(
+                          (node) => this.getExternalNodeCountryKey(node) === sourceCountryKey,
+                      ) || null
+                    : null;
+
+            if (!replacement) {
+                replacement = availableAlive[0];
+            }
+
+            usedReplacementDedupeKeys.add(replacement.dedupeKey);
+            return replacement;
+        };
+
+        for (const selectedNode of selectedNodes) {
             if (activeNodes.length >= relation.activeNodeLimit) {
                 break;
             }
+
+            if (!enabledSelectedDedupeKeys.has(selectedNode.dedupeKey)) {
+                continue;
+            }
+
+            if (selectedNode.isAlive || !relation.autoReplace) {
+                pushNode(selectedNode);
+                continue;
+            }
+
+            const replacement = takeReplacementFor(selectedNode);
+
+            if (replacement) {
+                pushNode(
+                    this.toResolvedReadyNode(
+                        relation.preset.slug,
+                        replacement,
+                        replacement.dedupeKey,
+                        false,
+                        true,
+                    ),
+                );
+            } else {
+                pushNode(selectedNode);
+            }
         }
 
-        return activeNodes;
+        if (activeNodes.length >= relation.activeNodeLimit || !relation.autoReplace) {
+            return activeNodes.slice(0, relation.activeNodeLimit);
+        }
+
+        for (const replacement of replacementPool) {
+            if (activeNodes.length >= relation.activeNodeLimit) {
+                break;
+            }
+
+            if (!replacement.isAlive || usedReplacementDedupeKeys.has(replacement.dedupeKey)) {
+                continue;
+            }
+
+            pushNode(
+                this.toResolvedReadyNode(
+                    relation.preset.slug,
+                    replacement,
+                    replacement.dedupeKey,
+                    false,
+                    true,
+                ),
+            );
+            usedReplacementDedupeKeys.add(replacement.dedupeKey);
+        }
+
+        return activeNodes.slice(0, relation.activeNodeLimit);
+    }
+
+    private getExternalNodeCountryKey(
+        node: Pick<ExternalNodeRecord, 'countryCode' | 'countryName' | 'displayCountry'>,
+    ): null | string {
+        const raw = node.countryCode || node.displayCountry || node.countryName || '';
+        const normalized = raw.trim().toUpperCase();
+
+        return normalized || null;
+    }
+
+    private getResolvedCountryKey(node: ReadySubscriptionResolvedNode): null | string {
+        const raw = node.countryCode || node.countryLabel || '';
+        const normalized = raw.trim().toUpperCase();
+
+        return normalized || null;
     }
 
     private toResolvedReadyNode(
@@ -1343,7 +1411,7 @@ export class ExternalVlessService implements OnModuleInit {
                 resolve(value);
             };
 
-            socket.setTimeout(3000);
+            socket.setTimeout(6000);
             socket.once('connect', () => finish(Date.now() - startedAt));
             socket.once('timeout', () => finish(null));
             socket.once('error', (error) => {
