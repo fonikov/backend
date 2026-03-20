@@ -1518,8 +1518,7 @@ export class ExternalVlessService implements OnModuleInit {
         const sanitizedHash = hashParts
             .join('#')
             .split(/[<>"']/)[0]
-            ?.trim()
-            .split(/\s+/)[0];
+            ?.trim();
 
         return `${beforeHashTrimmed}#${sanitizedHash || ''}`.trim();
     }
