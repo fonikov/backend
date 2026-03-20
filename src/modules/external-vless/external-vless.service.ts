@@ -240,6 +240,11 @@ export class ExternalVlessService implements OnModuleInit {
                         return selectedDelta;
                     }
 
+                    const enabledDelta = Number(b.isEnabled) - Number(a.isEnabled);
+                    if (enabledDelta !== 0) {
+                        return enabledDelta;
+                    }
+
                     return this.compareNodes(a, b);
                 })
                 .map((node) => ({
