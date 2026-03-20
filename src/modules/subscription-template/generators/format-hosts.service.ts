@@ -38,6 +38,7 @@ interface IGenerateFormattedHostsOptions {
     user: UserEntity;
     hostsOverrides?: ExternalSquadEntity['hostOverrides'];
     returnDbHost?: boolean;
+    skipEmptyHostsFallback?: boolean;
     fallbackOptions?: {
         showHwidMaxDeviceRemarks?: boolean;
         showHwidNotSupportedRemarks?: boolean;
@@ -64,6 +65,7 @@ export class FormatHostsService {
             user,
             hostsOverrides,
             returnDbHost = false,
+            skipEmptyHostsFallback = false,
             subscriptionSettings,
             fallbackOptions,
         } = options;
@@ -132,6 +134,10 @@ export class FormatHostsService {
         }
 
         if (hosts.length === 0) {
+            if (skipEmptyHostsFallback) {
+                return [];
+            }
+
             return this.createFallbackHosts(
                 subscriptionSettings.customRemarks.emptyHosts.map((remark) =>
                     TemplateEngine.formatWithUser(

@@ -36,12 +36,14 @@ export class RenderTemplatesService {
     }> {
         const { srrContext, user, hosts, hostsOverrides, fallbackOptions, additionalFormattedHosts } =
             params;
+        const hasExternalFormattedHosts = (additionalFormattedHosts?.length || 0) > 0;
 
         const formattedHosts = await this.formatHostsService.generateFormattedHosts({
             subscriptionSettings: srrContext.subscriptionSettings,
             hosts,
             user,
             hostsOverrides,
+            skipEmptyHostsFallback: hasExternalFormattedHosts,
             fallbackOptions,
         });
         const mergedHosts = [...formattedHosts, ...(additionalFormattedHosts || [])];
@@ -123,6 +125,7 @@ export class RenderTemplatesService {
         rawHosts: IRawHost[];
     }> {
         const { user, hosts, hostsOverrides, subscriptionSettings, additionalFormattedHosts } = params;
+        const hasExternalFormattedHosts = (additionalFormattedHosts?.length || 0) > 0;
 
         const formattedHosts = await this.formatHostsService.generateFormattedHosts({
             subscriptionSettings,
@@ -130,6 +133,7 @@ export class RenderTemplatesService {
             user,
             hostsOverrides,
             returnDbHost: true,
+            skipEmptyHostsFallback: hasExternalFormattedHosts,
         });
 
         const rawHosts = await this.rawHostsGeneratorService.generateConfig([
