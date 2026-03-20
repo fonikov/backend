@@ -670,6 +670,9 @@ model ExternalVlessNode {
   encryption     String?   @map("encryption")
   isAlive        Boolean   @default(false) @map("is_alive")
   latencyMs      Int?      @map("latency_ms")
+  tcpLatencyMs   Int?      @map("tcp_latency_ms")
+  transportLatencyMs Int?  @map("transport_latency_ms")
+  transportProbe String    @default("NONE") @map("transport_probe") @db.VarChar(20)
   lastCheckedAt  DateTime? @map("last_checked_at")
 
   createdAt DateTime @default(dbgenerated("now()")) @map("created_at")

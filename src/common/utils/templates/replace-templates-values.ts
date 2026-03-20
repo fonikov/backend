@@ -56,6 +56,7 @@ export class TemplateEngine {
             SUBSCRIPTION_URL: () => `https://${subPublicDomain}/${user.shortUuid}`,
             TAG: () => user.tag || '',
             EXPIRE_UNIX: () => dayjs(user.expireAt).unix(),
+            EXPIRE_DATE: () => dayjs(user.expireAt).format('DD.MM.YYYY HH:mm'),
             SHORT_UUID: () => user.shortUuid,
             ID: () => user.tId.toString(),
             TRAFFIC_USED_BYTES: () => user.userTraffic.usedTrafficBytes.toString(),

@@ -50,7 +50,6 @@ import {
     SubscriptionWithConfigResponse,
 } from './models';
 import {
-    getMaskedSubscriptionUserInfo,
     getSubscriptionRefillDate,
     getSubscriptionUserInfo,
 } from './utils/get-user-info.headers';
@@ -670,14 +669,6 @@ export class SubscriptionService {
             'profile-update-interval': settings.profileUpdateInterval.toString(),
         };
 
-        headers['subscription-userinfo'] = Object.entries(
-            isSubscriptionUserInfoEnabled
-                ? getSubscriptionUserInfo(user)
-                : getMaskedSubscriptionUserInfo(user),
-        )
-            .map(([key, val]) => `${key}=${val}`)
-            .join('; ');
-
         if (settings.happAnnounce) {
             headers.announce = `base64:${Buffer.from(
                 TemplateEngine.formatWithUser(
@@ -698,6 +689,10 @@ export class SubscriptionService {
         }
 
         if (isSubscriptionUserInfoEnabled) {
+            headers['subscription-userinfo'] = Object.entries(getSubscriptionUserInfo(user))
+                .map(([key, val]) => `${key}=${val}`)
+                .join('; ');
+
             const refillDate = getSubscriptionRefillDate(user.trafficLimitStrategy);
             if (refillDate) {
                 headers['subscription-refill-date'] = refillDate;
@@ -1107,6 +1102,7 @@ export class SubscriptionService {
                     hosts,
                     user: userEntity,
                     hostsOverrides,
+                    returnDbHost: true,
                 });
             };
 
@@ -1129,18 +1125,33 @@ export class SubscriptionService {
                     userEntity,
                 );
 
+            const sortFormattedHosts = (hosts: IFormattedHost[]) =>
+                [...hosts]
+                    .map((host, index) => ({ host, index }))
+                    .sort((a, b) => {
+                        const positionA = a.host.dbData?.viewPosition ?? Number.MAX_SAFE_INTEGER;
+                        const positionB = b.host.dbData?.viewPosition ?? Number.MAX_SAFE_INTEGER;
+
+                        if (positionA !== positionB) {
+                            return positionA - positionB;
+                        }
+
+                        return a.index - b.index;
+                    })
+                    .map(({ host }) => host);
+
             return ok(
                 new ConnectionKeysResponseModel({
                     enabledKeys: this.xrayGeneratorService.generateLinks(
-                        [...formattedEnabled, ...formattedEnabledReady],
+                        sortFormattedHosts([...formattedEnabled, ...formattedEnabledReady]),
                         false,
                     ),
                     disabledKeys: this.xrayGeneratorService.generateLinks(
-                        [...formattedDisabled, ...formattedDisabledReady],
+                        sortFormattedHosts([...formattedDisabled, ...formattedDisabledReady]),
                         false,
                     ),
                     hiddenKeys: this.xrayGeneratorService.generateLinks(
-                        [...formattedHidden, ...formattedHiddenReady],
+                        sortFormattedHosts([...formattedHidden, ...formattedHiddenReady]),
                         false,
                     ),
                 }),

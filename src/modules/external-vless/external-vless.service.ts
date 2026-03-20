@@ -54,6 +54,9 @@ type ProbedExternalVless = ParsedExternalVless & {
     isAlive: boolean;
     latencyMs: null | number;
     resolvedAddress: null | string;
+    tcpLatencyMs: null | number;
+    transportLatencyMs: null | number;
+    transportProbe: string;
 };
 
 type ExternalPresetSeed = {
@@ -102,6 +105,9 @@ type ExternalNodeRecord = {
     sourcePosition: number;
     sni: null | string;
     spiderX: null | string;
+    tcpLatencyMs: null | number;
+    transportLatencyMs: null | number;
+    transportProbe: string;
     uuid: string;
 };
 
@@ -335,6 +341,9 @@ export class ExternalVlessService implements OnModuleInit {
                         lastCheckedAt: new Date(),
                         latencyMs: health.latencyMs,
                         resolvedAddress: health.resolvedAddress,
+                        tcpLatencyMs: health.tcpLatencyMs,
+                        transportLatencyMs: health.transportLatencyMs,
+                        transportProbe: health.transportProbe,
                     },
                 });
             },
@@ -387,6 +396,9 @@ export class ExternalVlessService implements OnModuleInit {
                     isAlive: health.isAlive,
                     latencyMs: health.latencyMs,
                     resolvedAddress: health.resolvedAddress,
+                    tcpLatencyMs: health.tcpLatencyMs,
+                    transportLatencyMs: health.transportLatencyMs,
+                    transportProbe: health.transportProbe,
                 };
             },
             { concurrency: 20 },
@@ -459,6 +471,9 @@ export class ExternalVlessService implements OnModuleInit {
                             sni: node.sni || null,
                             sourcePosition: node.sourcePosition,
                             spiderX: node.spiderX || null,
+                            tcpLatencyMs: node.tcpLatencyMs,
+                            transportLatencyMs: node.transportLatencyMs,
+                            transportProbe: node.transportProbe,
                         };
                     }),
                 });
@@ -578,6 +593,9 @@ export class ExternalVlessService implements OnModuleInit {
                 sni: parsed.sni || null,
                 sourcePosition: 0,
                 spiderX: parsed.spiderX || null,
+                tcpLatencyMs: health.tcpLatencyMs,
+                transportLatencyMs: health.transportLatencyMs,
+                transportProbe: health.transportProbe,
             },
         });
     }
@@ -719,6 +737,11 @@ export class ExternalVlessService implements OnModuleInit {
             where: {
                 hostUuid: {
                     in: hosts.map((host) => host.uuid),
+                },
+            },
+            orderBy: {
+                host: {
+                    viewPosition: 'asc',
                 },
             },
             include: {
@@ -872,6 +895,12 @@ export class ExternalVlessService implements OnModuleInit {
             return Number(b.isPinned) - Number(a.isPinned);
         }
 
+        const fullProbeDelta =
+            Number(this.hasPreferredProbeSuccess(b)) - Number(this.hasPreferredProbeSuccess(a));
+        if (fullProbeDelta !== 0) {
+            return fullProbeDelta;
+        }
+
         if (a.isAlive !== b.isAlive) {
             return Number(b.isAlive) - Number(a.isAlive);
         }
@@ -885,6 +914,10 @@ export class ExternalVlessService implements OnModuleInit {
 
         if (a.priority !== b.priority) {
             return b.priority - a.priority;
+        }
+
+        if (a.sourcePosition !== b.sourcePosition) {
+            return a.sourcePosition - b.sourcePosition;
         }
 
         return a.port - b.port;
@@ -1347,17 +1380,23 @@ export class ExternalVlessService implements OnModuleInit {
         isAlive: boolean;
         latencyMs: null | number;
         resolvedAddress: null | string;
+        tcpLatencyMs: null | number;
+        transportLatencyMs: null | number;
+        transportProbe: string;
     }> {
         const resolvedAddress = await this.resolveAddress(target.address);
         const geoData = resolvedAddress ? geoip.lookup(resolvedAddress) : null;
-        const latencyMs = target.port ? await this.probeLatency(target) : null;
+        const probeResult = target.port ? await this.probeLatency(target) : null;
 
         return {
             countryCode: geoData?.country || null,
             countryName: geoData?.country ? this.resolveCountryName(geoData.country) : null,
-            isAlive: latencyMs !== null,
-            latencyMs,
+            isAlive: probeResult !== null && probeResult.latencyMs !== null,
+            latencyMs: probeResult?.latencyMs ?? null,
             resolvedAddress,
+            tcpLatencyMs: probeResult?.tcpLatencyMs ?? null,
+            transportLatencyMs: probeResult?.transportLatencyMs ?? null,
+            transportProbe: probeResult?.transportProbe ?? 'NONE',
         };
     }
 
@@ -1419,25 +1458,54 @@ export class ExternalVlessService implements OnModuleInit {
         return [...tags];
     }
 
-    private async probeLatency(target: ProbeTarget): Promise<null | number> {
+    private async probeLatency(target: ProbeTarget): Promise<null | {
+        latencyMs: null | number;
+        tcpLatencyMs: null | number;
+        transportLatencyMs: null | number;
+        transportProbe: string;
+    }> {
         const security = (target.security || 'none').toLowerCase();
         const network = (target.network || 'tcp').toLowerCase();
-        const probes: Promise<null | number>[] = [this.probeTcpLatency(target.address, target.port!)];
+        const tcpLatencyMs = await this.probeTcpLatency(target.address, target.port!);
+        let transportLatencyMs: null | number = null;
+        let transportProbe = 'NONE';
 
         if (security === 'tls' && ['httpupgrade', 'ws', 'xhttp'].includes(network)) {
-            probes.push(this.probeHttpsLatency(target));
+            transportProbe = 'HTTPS';
+            transportLatencyMs = await this.probeHttpsLatency(target);
         } else if (security === 'tls') {
-            probes.push(this.probeTlsLatency(target));
+            transportProbe = 'TLS';
+            transportLatencyMs = await this.probeTlsLatency(target);
         }
 
-        const results = await Promise.all(probes);
-        const successful = results.filter((latency): latency is number => latency !== null);
+        const successful = [tcpLatencyMs, transportLatencyMs].filter(
+            (latency): latency is number => latency !== null,
+        );
 
         if (successful.length === 0) {
             return null;
         }
 
-        return Math.min(...successful);
+        return {
+            latencyMs: Math.min(...successful),
+            tcpLatencyMs,
+            transportLatencyMs,
+            transportProbe,
+        };
+    }
+
+    private hasPreferredProbeSuccess(
+        node: Pick<ExternalNodeRecord, 'tcpLatencyMs' | 'transportLatencyMs' | 'transportProbe'>,
+    ): boolean {
+        if (node.tcpLatencyMs === null) {
+            return false;
+        }
+
+        if (node.transportProbe === 'NONE') {
+            return true;
+        }
+
+        return node.transportLatencyMs !== null;
     }
 
     private async probeTcpLatency(address: string, port: number): Promise<null | number> {

@@ -43,6 +43,7 @@ export class RenderTemplatesService {
             hosts,
             user,
             hostsOverrides,
+            returnDbHost: true,
             skipEmptyHostsFallback: hasExternalFormattedHosts,
             fallbackOptions,
         });
