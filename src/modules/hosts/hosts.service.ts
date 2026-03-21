@@ -1,12 +1,17 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
+import axios from 'axios';
+
 import { Injectable, Logger } from '@nestjs/common';
 import { QueryBus } from '@nestjs/cqrs';
 
 import { fail, ok, TResult } from '@common/types';
 import { ALPN, ERRORS, FINGERPRINTS, SECURITY_LAYERS } from '@libs/contracts/constants';
-import { ImportHostCommand } from '@libs/contracts/commands';
+import {
+    ImportHostCommand,
+    ImportHostsFromVlessSubscriptionCommand,
+} from '@libs/contracts/commands';
 
 import { GetSubscriptionTemplateByUuidQuery } from '@modules/subscription-template/queries/get-template-by-uuid';
 import { GetConfigProfileByUuidQuery } from '@modules/config-profiles/queries/get-config-profile-by-uuid';
@@ -515,6 +520,135 @@ export class HostsService {
         }
     }
 
+    public async importHostsFromVlessSubscription(
+        dto: ImportHostsFromVlessSubscriptionCommand.Request,
+    ): Promise<TResult<ImportHostsFromVlessSubscriptionCommand.Response['response']>> {
+        try {
+            const inboundResolution = await this.resolveInbound(dto.inbound);
+            if (!inboundResolution.isOk) {
+                return inboundResolution;
+            }
+
+            const source = await this.loadVlessSubscriptionSource(dto.input);
+            const parsedUris = this.expandSourcePayloads(source).flatMap((payload) =>
+                this.extractVlessUris(payload),
+            );
+            const uniqueUris = [...new Set(parsedUris)];
+            const existingHosts = await this.hostsRepository.findAll();
+            const existingImportKeys = new Set(
+                existingHosts.map((host) =>
+                    this.buildImportedHostDedupeKey({
+                        address: host.address,
+                        port: host.port,
+                        path: host.path,
+                        sni: host.sni,
+                        host: host.host,
+                        alpn: host.alpn,
+                        fingerprint: host.fingerprint,
+                        allowInsecure: host.allowInsecure,
+                        securityLayer: host.securityLayer,
+                        configProfileUuid: host.configProfileUuid,
+                        configProfileInboundUuid: host.configProfileInboundUuid,
+                    }),
+                ),
+            );
+
+            if (uniqueUris.length === 0) {
+                return fail(
+                    ERRORS.INVALID_HOST_IMPORT_INPUT.withMessage(
+                        'No VLESS URIs were found in the provided subscription input',
+                    ),
+                );
+            }
+
+            let createdCount = 0;
+            let skippedCount = parsedUris.length - uniqueUris.length;
+
+            for (const [index, rawUri] of uniqueUris.entries()) {
+                try {
+                    const parsed = await this.parseVlessUri(rawUri);
+                    const importKey = this.buildImportedHostDedupeKey({
+                        address: parsed.address,
+                        port: parsed.port,
+                        path: parsed.path,
+                        sni: parsed.sni,
+                        host: parsed.host,
+                        alpn: parsed.alpn,
+                        fingerprint: parsed.fingerprint,
+                        allowInsecure: parsed.allowInsecure,
+                        securityLayer: parsed.securityLayer,
+                        configProfileUuid: inboundResolution.response.configProfileUuid,
+                        configProfileInboundUuid:
+                            inboundResolution.response.configProfileInboundUuid,
+                    });
+
+                    if (existingImportKeys.has(importKey)) {
+                        skippedCount += 1;
+                        continue;
+                    }
+
+                    const hostEntity = new HostsEntity({
+                        remark: this.sanitizeImportedHostRemark(parsed.remark, index),
+                        address: parsed.address.trim(),
+                        port: parsed.port,
+                        path: parsed.path,
+                        sni: parsed.sni,
+                        host: parsed.host,
+                        alpn: parsed.alpn,
+                        fingerprint: parsed.fingerprint,
+                        allowInsecure: parsed.allowInsecure,
+                        securityLayer: parsed.securityLayer,
+                        tag: dto.tag ?? null,
+                        isDisabled: dto.isDisabled ?? false,
+                        isHidden: dto.isHidden ?? false,
+                        configProfileUuid: inboundResolution.response.configProfileUuid,
+                        configProfileInboundUuid:
+                            inboundResolution.response.configProfileInboundUuid,
+                    });
+
+                    await this.hostsRepository.create(hostEntity);
+                    existingImportKeys.add(importKey);
+                    createdCount += 1;
+                } catch (error) {
+                    skippedCount += 1;
+                    this.logger.warn(
+                        `Skipped VLESS subscription item during host import: ${
+                            error instanceof Error ? error.message : String(error)
+                        }`,
+                    );
+                }
+            }
+
+            if (createdCount === 0) {
+                return fail(
+                    ERRORS.INVALID_HOST_IMPORT_INPUT.withMessage(
+                        'No valid hosts could be imported from the provided VLESS subscription',
+                    ),
+                );
+            }
+
+            return ok({
+                createdCount,
+                parsedCount: uniqueUris.length,
+                skippedCount,
+            });
+        } catch (error) {
+            this.logger.warn(
+                `Failed to import VLESS subscription: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+
+            return fail(
+                ERRORS.INVALID_HOST_IMPORT_INPUT.withMessage(
+                    error instanceof Error
+                        ? error.message
+                        : 'Failed to import VLESS subscription',
+                ),
+            );
+        }
+    }
+
     private async resolveInbound(inboundObj: {
         configProfileInboundUuid: string;
         configProfileUuid: string;
@@ -670,6 +804,165 @@ export class HostsService {
         } catch {
             throw new Error(`Failed to resolve address "${normalizedAddress}" to an IP`);
         }
+    }
+
+    private async loadVlessSubscriptionSource(input: string): Promise<string> {
+        const normalizedInput = input.trim();
+        const targetUrl = this.tryParseHttpUrl(normalizedInput);
+
+        if (!targetUrl) {
+            return normalizedInput;
+        }
+
+        try {
+            const response = await axios.get<string>(targetUrl.toString(), {
+                responseType: 'text',
+                timeout: 15_000,
+                maxContentLength: 2 * 1024 * 1024,
+            });
+
+            return typeof response.data === 'string'
+                ? response.data
+                : String(response.data ?? '');
+        } catch (error) {
+            throw new Error(
+                `Failed to fetch subscription URL: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
+    }
+
+    private tryParseHttpUrl(input: string): null | URL {
+        try {
+            const url = new URL(input);
+            if (url.protocol === 'http:' || url.protocol === 'https:') {
+                return url;
+            }
+
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
+    private expandSourcePayloads(source: string): string[] {
+        const normalized = this.decodeHtmlEntities(source).replace(/\r\n?/g, '\n').trim();
+        const payloads = new Set<string>();
+
+        if (normalized) {
+            payloads.add(normalized);
+        }
+
+        const compact = normalized.replace(/\s+/g, '');
+        if (!compact || normalized.includes('vless://')) {
+            return [...payloads];
+        }
+
+        if (!/^[A-Za-z0-9+/=_-]+$/.test(compact) || compact.length < 32) {
+            return [...payloads];
+        }
+
+        for (const candidate of [compact, compact.replace(/-/g, '+').replace(/_/g, '/')]) {
+            try {
+                const decoded = Buffer.from(candidate, 'base64').toString('utf8').trim();
+
+                if (decoded.includes('vless://')) {
+                    payloads.add(this.decodeHtmlEntities(decoded));
+                }
+            } catch {
+                continue;
+            }
+        }
+
+        return [...payloads];
+    }
+
+    private extractVlessUris(source: string): string[] {
+        return source
+            .replace(/\r/g, '\n')
+            .split(/(?=vless:\/\/)/g)
+            .map((chunk) => chunk.trim())
+            .filter((chunk) => chunk.startsWith('vless://'))
+            .map((chunk) => this.normalizeRawUri(chunk))
+            .filter(Boolean);
+    }
+
+    private normalizeRawUri(rawUri: string): string {
+        let normalized = this.decodeHtmlEntities(rawUri)
+            .replace(/[\r\n\t]+/g, ' ')
+            .trim();
+        const vlessIndex = normalized.indexOf('vless://');
+
+        if (vlessIndex >= 0) {
+            normalized = normalized.slice(vlessIndex);
+        }
+
+        const nextSchemeMatch = /(?:vmess|vless|trojan|ssr?|hy2|hysteria2?|tuic):\/\//gi;
+        nextSchemeMatch.lastIndex = 'vless://'.length;
+        const nextScheme = nextSchemeMatch.exec(normalized);
+
+        if (nextScheme && nextScheme.index > 0) {
+            normalized = normalized.slice(0, nextScheme.index).trim();
+        }
+
+        const [beforeHash, ...hashParts] = normalized.split('#');
+        const beforeHashTrimmed = beforeHash.split(/[<>"']/)[0]?.trim() || beforeHash.trim();
+
+        if (hashParts.length === 0) {
+            return beforeHashTrimmed.split(/\s+/)[0] || beforeHashTrimmed;
+        }
+
+        const sanitizedHash = hashParts.join('#').split(/[<>"']/)[0]?.trim();
+
+        return `${beforeHashTrimmed}#${sanitizedHash || ''}`.trim();
+    }
+
+    private decodeHtmlEntities(input: string): string {
+        return input
+            .replace(/&amp;/gi, '&')
+            .replace(/&#38;/gi, '&')
+            .replace(/&quot;/gi, '"')
+            .replace(/&#34;/gi, '"')
+            .replace(/&apos;/gi, "'")
+            .replace(/&#39;/gi, "'")
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>');
+    }
+
+    private sanitizeImportedHostRemark(input: null | string, index: number): string {
+        const fallback = `Imported VLESS ${index + 1}`;
+        const normalized = (input || fallback).replace(/\s+/g, ' ').trim();
+
+        return normalized.slice(0, 40) || fallback;
+    }
+
+    private buildImportedHostDedupeKey(input: {
+        address: string;
+        port: number;
+        path: null | string;
+        sni: null | string;
+        host: null | string;
+        alpn: null | string;
+        fingerprint: null | string;
+        allowInsecure: boolean;
+        securityLayer: string;
+        configProfileUuid: null | string;
+        configProfileInboundUuid: null | string;
+    }): string {
+        return [
+            input.configProfileUuid ?? '',
+            input.configProfileInboundUuid ?? '',
+            input.address.trim().toLowerCase(),
+            String(input.port),
+            input.path?.trim() ?? '',
+            input.sni?.trim().toLowerCase() ?? '',
+            input.host?.trim().toLowerCase() ?? '',
+            input.alpn?.trim().toLowerCase() ?? '',
+            input.fingerprint?.trim().toLowerCase() ?? '',
+            input.securityLayer.trim().toLowerCase(),
+            input.allowInsecure ? '1' : '0',
+        ].join('|');
     }
 
     private mapSecurityLayer(

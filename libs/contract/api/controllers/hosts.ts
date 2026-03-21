@@ -11,6 +11,7 @@ export const HOSTS_ROUTES = {
 
     ACTIONS: {
         IMPORT: `${HOST_ACTIONS_ROUTE}/import`,
+        IMPORT_SUBSCRIPTION: `${HOST_ACTIONS_ROUTE}/import-subscription`,
         REORDER: `${HOST_ACTIONS_ROUTE}/reorder`,
     },
 
