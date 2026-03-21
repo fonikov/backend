@@ -145,12 +145,18 @@ type ReadySubscriptionRelationRecord = {
 
 type ProbeTarget = {
     address: string;
+    alpn?: null | string;
     authority?: null | string;
+    credential?: null | string;
+    fingerprint?: null | string;
+    flow?: null | string;
     host?: null | string;
     network?: null | string;
     path?: null | string;
     port: null | number;
+    publicKey?: null | string;
     security?: null | string;
+    shortId?: null | string;
     sni?: null | string;
 };
 
@@ -1658,12 +1664,18 @@ export class ExternalVlessService implements OnModuleInit {
                     return chunk.map((target, chunkOffset) => ({
                         id: String(start + chunkOffset),
                         address: target.address,
+                        alpn: target.alpn,
                         authority: target.authority,
+                        credential: target.credential,
+                        fingerprint: target.fingerprint,
+                        flow: target.flow,
                         host: target.host,
                         network: target.network,
                         path: target.path,
                         port: target.port,
+                        publicKey: target.publicKey,
                         security: target.security,
+                        shortId: target.shortId,
                         sni: target.sni,
                     }));
                 },
