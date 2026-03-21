@@ -354,14 +354,14 @@ def probe_target(target: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
         result["transportProbe"] = "TLS"
         transport_latency = probe_tls(resolved_address, port, timeout_ms, servername)
     elif security == "reality":
+        result["transportProbe"] = "REALITY"
         transport_latency = probe_reality(target, timeout_ms)
-        result["transportProbe"] = "REALITY" if transport_latency is not None else "NONE"
 
     result["transportLatencyMs"] = transport_latency
 
     successful = [lat for lat in (tcp_latency, transport_latency) if isinstance(lat, int)]
     if successful:
-        result["latencyMs"] = min(successful)
+        result["latencyMs"] = transport_latency if isinstance(transport_latency, int) else min(successful)
 
     return result
 

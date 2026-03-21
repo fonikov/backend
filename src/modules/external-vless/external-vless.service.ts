@@ -1056,8 +1056,8 @@ export class ExternalVlessService implements OnModuleInit {
             return Number(b.isAlive) - Number(a.isAlive);
         }
 
-        const latencyA = a.latencyMs ?? Number.MAX_SAFE_INTEGER;
-        const latencyB = b.latencyMs ?? Number.MAX_SAFE_INTEGER;
+        const latencyA = this.getPreferredSortLatency(a);
+        const latencyB = this.getPreferredSortLatency(b);
 
         if (latencyA !== latencyB) {
             return latencyA - latencyB;
@@ -1812,6 +1812,8 @@ export class ExternalVlessService implements OnModuleInit {
         } else if (security === 'tls') {
             transportProbe = 'TLS';
             transportLatencyMs = await this.probeTlsLatency(target);
+        } else if (security === 'reality') {
+            transportProbe = 'REALITY';
         }
 
         const successful = [tcpLatencyMs, transportLatencyMs].filter(
@@ -1823,7 +1825,10 @@ export class ExternalVlessService implements OnModuleInit {
         }
 
         return {
-            latencyMs: Math.min(...successful),
+            latencyMs:
+                transportLatencyMs ??
+                tcpLatencyMs ??
+                (successful.length > 0 ? Math.min(...successful) : null),
             tcpLatencyMs,
             transportLatencyMs,
             transportProbe,
@@ -1847,11 +1852,25 @@ export class ExternalVlessService implements OnModuleInit {
             return 2;
         }
 
-        if (node.tcpLatencyMs !== null) {
+        if (node.transportProbe !== 'NONE' && node.tcpLatencyMs !== null) {
             return 1;
         }
 
         return 0;
+    }
+
+    private getPreferredSortLatency(
+        node: Pick<ExternalNodeRecord, 'latencyMs' | 'tcpLatencyMs' | 'transportLatencyMs' | 'transportProbe'>,
+    ): number {
+        if (node.transportProbe !== 'NONE' && node.transportLatencyMs !== null) {
+            return node.transportLatencyMs;
+        }
+
+        if (node.tcpLatencyMs !== null) {
+            return node.tcpLatencyMs;
+        }
+
+        return node.latencyMs ?? Number.MAX_SAFE_INTEGER;
     }
 
     private async probeTcpLatency(address: string, port: number): Promise<null | number> {
