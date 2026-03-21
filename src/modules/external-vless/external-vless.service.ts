@@ -1585,7 +1585,7 @@ export class ExternalVlessService implements OnModuleInit {
         const params = url.searchParams;
         const decodedRemark = this.decodeRemark(url.hash.replace(/^#/, ''));
         const host = params.get('host') || '';
-        const network = (params.get('type') || 'tcp').toLowerCase();
+        const network = this.normalizeNetwork(params.get('type'));
         const path = params.get('path') || '';
         const publicKey = params.get('pbk') || '';
         const sni = params.get('sni') || '';
@@ -1593,6 +1593,7 @@ export class ExternalVlessService implements OnModuleInit {
         const serviceName = params.get('serviceName') || '';
         const authority = params.get('authority') || '';
         const credential = decodeURIComponent(url.username);
+        const security = this.normalizeSecurity(params.get('security'));
 
         return {
             address: url.hostname,
@@ -1607,7 +1608,7 @@ export class ExternalVlessService implements OnModuleInit {
                 path,
                 port: Number(url.port || 443),
                 publicKey,
-                security: (params.get('security') || 'none').toLowerCase(),
+                security,
                 serviceName,
                 shortId,
                 sni,
@@ -1624,13 +1625,46 @@ export class ExternalVlessService implements OnModuleInit {
             publicKey,
             rawUri,
             remarkTags: this.extractRemarkTags(decodedRemark),
-            security: (params.get('security') || 'none').toLowerCase(),
+            security,
             serviceName,
             shortId,
             sni,
             sourcePosition,
             spiderX: params.get('spx') || params.get('spiderX') || '',
         };
+    }
+
+    private normalizeNetwork(value: null | string): string {
+        const normalized = (value || 'tcp').toLowerCase().trim();
+
+        switch (normalized) {
+            case 'grpc':
+            case 'http':
+            case 'httpupgrade':
+            case 'kcp':
+            case 'quic':
+            case 'raw':
+            case 'splithttp':
+            case 'tcp':
+            case 'ws':
+            case 'xhttp':
+                return normalized;
+            default:
+                return 'tcp';
+        }
+    }
+
+    private normalizeSecurity(value: null | string): string {
+        const normalized = (value || 'none').toLowerCase().trim();
+
+        switch (normalized) {
+            case 'reality':
+            case 'tls':
+            case 'none':
+                return normalized;
+            default:
+                return 'none';
+        }
     }
 
     private decodeHtmlEntities(input: string): string {
