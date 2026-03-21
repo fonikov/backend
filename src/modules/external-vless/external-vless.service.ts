@@ -818,7 +818,10 @@ export class ExternalVlessService implements OnModuleInit {
             autoReplace: input.autoReplace ?? false,
             activeNodeLimit: Math.max(
                 1,
-                Math.min(10, input.activeNodeLimit ?? normalizedSelectedNodes.length),
+                Math.min(
+                    normalizedSelectedNodes.length,
+                    input.activeNodeLimit ?? normalizedSelectedNodes.length,
+                ),
             ),
             selectedNodes: normalizedSelectedNodes,
         };
