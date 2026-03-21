@@ -1655,6 +1655,14 @@ export class ExternalVlessService implements OnModuleInit {
             normalized = normalized.slice(vlessIndex);
         }
 
+        const nextSchemeMatch = /(?:vmess|vless|trojan|ssr?|hy2|hysteria2?|tuic):\/\//gi;
+        nextSchemeMatch.lastIndex = 'vless://'.length;
+        const nextScheme = nextSchemeMatch.exec(normalized);
+
+        if (nextScheme && nextScheme.index > 0) {
+            normalized = normalized.slice(0, nextScheme.index).trim();
+        }
+
         const [beforeHash, ...hashParts] = normalized.split('#');
         const beforeHashTrimmed = beforeHash.split(/[<>"']/)[0]?.trim() || beforeHash.trim();
 
