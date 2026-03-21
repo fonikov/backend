@@ -183,6 +183,7 @@ const REMOTE_PROBE_BATCH_SIZE = 25;
 const REMOTE_PROBE_BATCH_CONCURRENCY = 4;
 const MAX_PROBED_NODES_PER_SYNC = 2000;
 const EXTERNAL_PRESET_INSERT_BATCH_SIZE = 1000;
+const MAX_BLOCKING_PROBED_NODES_PER_SYNC = 5000;
 
 const WHITE_SOURCE_URLS = [
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt',
@@ -539,14 +540,24 @@ export class ExternalVlessService implements OnModuleInit {
         this.logger.log(
             `External preset ${preset.slug}: ${parsedNodes.length} deduped nodes from ${preset.sourceUrls.length} sources`,
         );
-        const nodesToProbe = parsedNodes.slice(0, MAX_PROBED_NODES_PER_SYNC);
-        if (parsedNodes.length > MAX_PROBED_NODES_PER_SYNC) {
+        const shouldProbeDuringSync = parsedNodes.length <= MAX_BLOCKING_PROBED_NODES_PER_SYNC;
+        const nodesToProbe = shouldProbeDuringSync
+            ? parsedNodes.slice(0, MAX_PROBED_NODES_PER_SYNC)
+            : [];
+
+        if (shouldProbeDuringSync && parsedNodes.length > MAX_PROBED_NODES_PER_SYNC) {
             this.logger.log(
                 `External preset ${preset.slug}: probing first ${MAX_PROBED_NODES_PER_SYNC} of ${parsedNodes.length} nodes during sync`,
             );
         }
 
-        const healthChecks = await this.getNodeHealthBatch(nodesToProbe);
+        if (!shouldProbeDuringSync) {
+            this.logger.log(
+                `External preset ${preset.slug}: skipping blocking probe during sync for ${parsedNodes.length} nodes`,
+            );
+        }
+
+        const healthChecks = nodesToProbe.length > 0 ? await this.getNodeHealthBatch(nodesToProbe) : [];
         const healthByDedupeKey = new Map(
             nodesToProbe.map((node, index) => [node.dedupeKey, healthChecks[index]] as const),
         );
