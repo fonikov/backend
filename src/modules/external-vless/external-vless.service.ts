@@ -208,9 +208,9 @@ const DEFAULT_PRESETS: ExternalPresetSeed[] = [
         ],
         includeKeywords: [],
         requiredSecurity: null,
-        selectionLimit: 5,
+        selectionLimit: 5000,
         countryMode: 'ANY',
-        uniqueCountries: true,
+        uniqueCountries: false,
     },
     {
         slug: 'auto-white-ru-ip',
@@ -218,7 +218,7 @@ const DEFAULT_PRESETS: ExternalPresetSeed[] = [
         sourceUrls: WHITE_SOURCE_URLS,
         includeKeywords: [],
         requiredSecurity: 'reality',
-        selectionLimit: 5,
+        selectionLimit: 5000,
         countryMode: 'ANY',
         uniqueCountries: false,
     },
@@ -658,7 +658,7 @@ export class ExternalVlessService implements OnModuleInit {
                 ...(body.name !== undefined ? { name: body.name.trim() } : {}),
                 ...(body.isEnabled !== undefined ? { isEnabled: body.isEnabled } : {}),
                 ...(body.selectionLimit !== undefined
-                    ? { selectionLimit: Math.max(1, Math.min(50, body.selectionLimit)) }
+                    ? { selectionLimit: Math.max(1, Math.min(5000, body.selectionLimit)) }
                     : {}),
             },
         });
@@ -1311,7 +1311,7 @@ export class ExternalVlessService implements OnModuleInit {
         node: ExternalNodeRecord,
         index: number,
     ): IFormattedHost {
-        const indexedRemark = this.applyReadyHostIndexTemplate(
+        const indexedRemark = this.applyReadyHostIndexTemplateSafe(
             host.remark,
             readyState.activeNodes.length,
             index,
@@ -1381,6 +1381,21 @@ export class ExternalVlessService implements OnModuleInit {
 
         const replacement = totalActiveNodes > 1 ? `#${index + 1}` : '';
         return remark.replace(/#(?:x|х)/gi, replacement).replace(/\s{2,}/g, ' ').trim();
+    }
+
+    private applyReadyHostIndexTemplateSafe(
+        remark: string,
+        totalActiveNodes: number,
+        index: number,
+    ): string {
+        const placeholderPattern = /#(?:x|\u0445)/gi;
+
+        if (!placeholderPattern.test(remark)) {
+            return remark;
+        }
+
+        const replacement = totalActiveNodes > 1 ? `#${index + 1}` : '';
+        return remark.replace(placeholderPattern, replacement).replace(/\s{2,}/g, ' ').trim();
     }
 
     private getAvailableCountries(nodes: ExternalNodeRecord[]) {
