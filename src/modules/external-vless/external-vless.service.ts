@@ -181,6 +181,7 @@ type ProbeLatencyResult = {
 
 const REMOTE_PROBE_BATCH_SIZE = 25;
 const REMOTE_PROBE_BATCH_CONCURRENCY = 4;
+const MAX_PROBED_NODES_PER_SYNC = 2000;
 
 const WHITE_SOURCE_URLS = [
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt',
@@ -537,21 +538,31 @@ export class ExternalVlessService implements OnModuleInit {
         this.logger.log(
             `External preset ${preset.slug}: ${parsedNodes.length} deduped nodes from ${preset.sourceUrls.length} sources`,
         );
-        const healthChecks = await this.getNodeHealthBatch(parsedNodes);
+        const nodesToProbe = parsedNodes.slice(0, MAX_PROBED_NODES_PER_SYNC);
+        if (parsedNodes.length > MAX_PROBED_NODES_PER_SYNC) {
+            this.logger.log(
+                `External preset ${preset.slug}: probing first ${MAX_PROBED_NODES_PER_SYNC} of ${parsedNodes.length} nodes during sync`,
+            );
+        }
 
-        const probedNodes = parsedNodes.map((node, index) => {
-            const health = healthChecks[index];
+        const healthChecks = await this.getNodeHealthBatch(nodesToProbe);
+        const healthByDedupeKey = new Map(
+            nodesToProbe.map((node, index) => [node.dedupeKey, healthChecks[index]] as const),
+        );
+
+        const probedNodes = parsedNodes.map((node) => {
+            const health = healthByDedupeKey.get(node.dedupeKey);
 
             return {
                 ...node,
-                countryCode: health.countryCode,
-                countryName: health.countryName,
-                isAlive: health.isAlive,
-                latencyMs: health.latencyMs,
-                resolvedAddress: health.resolvedAddress,
-                tcpLatencyMs: health.tcpLatencyMs,
-                transportLatencyMs: health.transportLatencyMs,
-                transportProbe: health.transportProbe,
+                countryCode: health?.countryCode ?? null,
+                countryName: health?.countryName ?? null,
+                isAlive: health?.isAlive ?? false,
+                latencyMs: health?.latencyMs ?? null,
+                resolvedAddress: health?.resolvedAddress ?? null,
+                tcpLatencyMs: health?.tcpLatencyMs ?? null,
+                transportLatencyMs: health?.transportLatencyMs ?? null,
+                transportProbe: health?.transportProbe ?? 'NONE',
             };
         });
 
@@ -562,11 +573,19 @@ export class ExternalVlessService implements OnModuleInit {
             },
             select: {
                 aliasRemark: true,
+                countryCode: true,
+                countryName: true,
                 customTags: true,
                 dedupeKey: true,
                 isEnabled: true,
+                isAlive: true,
                 isPinned: true,
+                latencyMs: true,
                 priority: true,
+                resolvedAddress: true,
+                tcpLatencyMs: true,
+                transportLatencyMs: true,
+                transportProbe: true,
             },
         });
         const existingAutoNodeMap = new Map(
@@ -591,8 +610,8 @@ export class ExternalVlessService implements OnModuleInit {
                             aliasRemark: existingNode?.aliasRemark || null,
                             alpn: node.alpn || null,
                             authority: node.authority || null,
-                            countryCode: node.countryCode,
-                            countryName: node.countryName,
+                            countryCode: node.countryCode ?? existingNode?.countryCode ?? null,
+                            countryName: node.countryName ?? existingNode?.countryName ?? null,
                             credential: node.credential,
                             customTags: existingNode?.customTags ?? [],
                             dedupeKey: node.dedupeKey,
@@ -601,12 +620,12 @@ export class ExternalVlessService implements OnModuleInit {
                             fingerprint: node.fingerprint || null,
                             flow: node.flow || null,
                             host: node.host || null,
-                            isAlive: node.isAlive,
+                            isAlive: node.isAlive || existingNode?.isAlive || false,
                             isEnabled: existingNode?.isEnabled ?? true,
                             isManual: false,
                             isPinned: existingNode?.isPinned ?? false,
                             lastCheckedAt: new Date(),
-                            latencyMs: node.latencyMs,
+                            latencyMs: node.latencyMs ?? existingNode?.latencyMs ?? null,
                             originalRemark: node.originalRemark,
                             path: node.path || null,
                             port: node.port,
@@ -615,16 +634,17 @@ export class ExternalVlessService implements OnModuleInit {
                             publicKey: node.publicKey || null,
                             rawUri: node.rawUri,
                             remarkTags: node.remarkTags,
-                            resolvedAddress: node.resolvedAddress,
+                            resolvedAddress: node.resolvedAddress ?? existingNode?.resolvedAddress ?? null,
                             security: node.security,
                             serviceName: node.serviceName || null,
                             shortId: node.shortId || null,
                             sni: node.sni || null,
                             sourcePosition: node.sourcePosition,
                             spiderX: node.spiderX || null,
-                            tcpLatencyMs: node.tcpLatencyMs,
-                            transportLatencyMs: node.transportLatencyMs,
-                            transportProbe: node.transportProbe,
+                            tcpLatencyMs: node.tcpLatencyMs ?? existingNode?.tcpLatencyMs ?? null,
+                            transportLatencyMs:
+                                node.transportLatencyMs ?? existingNode?.transportLatencyMs ?? null,
+                            transportProbe: node.transportProbe || existingNode?.transportProbe || 'NONE',
                         };
                     }),
                     skipDuplicates: true,
