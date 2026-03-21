@@ -184,6 +184,9 @@ const REMOTE_PROBE_BATCH_CONCURRENCY = 4;
 const MAX_PROBED_NODES_PER_SYNC = 2000;
 const EXTERNAL_PRESET_INSERT_BATCH_SIZE = 1000;
 const MAX_BLOCKING_PROBED_NODES_PER_SYNC = 5000;
+const READY_SUBSCRIPTION_REPLACEMENT_POOL_MIN = 250;
+const READY_SUBSCRIPTION_REPLACEMENT_POOL_MAX = 2000;
+const READY_SUBSCRIPTION_REPLACEMENT_POOL_MULTIPLIER = 20;
 
 const WHITE_SOURCE_URLS = [
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt',
@@ -865,6 +868,7 @@ export class ExternalVlessService implements OnModuleInit {
 
     public async buildReadySubscriptionStates(
         relations: ReadySubscriptionRelationRecord[],
+        presetPools?: Map<string, ExternalNodeRecord[]>,
     ): Promise<Map<string, ReadySubscriptionHostState>> {
         const result = new Map<string, ReadySubscriptionHostState>();
 
@@ -872,30 +876,8 @@ export class ExternalVlessService implements OnModuleInit {
             return result;
         }
 
-        const presetUuidSet = new Set<string>(
-            relations.map((relation: ReadySubscriptionRelationRecord) => relation.preset.uuid),
-        );
-        const presetNodes = await this.prisma.tx.externalVlessNode.findMany({
-            where: {
-                presetUuid: {
-                    in: [...presetUuidSet],
-                },
-            },
-            orderBy: [
-                { isPinned: 'desc' },
-                { isAlive: 'desc' },
-                { latencyMs: 'asc' },
-                { priority: 'desc' },
-                { sourcePosition: 'asc' },
-            ],
-        });
-
-        const nodesByPreset = new Map<string, ExternalNodeRecord[]>();
-        for (const node of presetNodes) {
-            const list = nodesByPreset.get(node.presetUuid) || [];
-            list.push(node);
-            nodesByPreset.set(node.presetUuid, list);
-        }
+        const nodesByPreset =
+            presetPools ?? (await this.loadReadySubscriptionPresetPools(relations));
 
         for (const relation of relations) {
             const presetPool = nodesByPreset.get(relation.preset.uuid) || [];
@@ -954,22 +936,9 @@ export class ExternalVlessService implements OnModuleInit {
             },
         });
 
-        const readyStateMap = await this.buildReadySubscriptionStates(relations);
+        const presetPools = await this.loadReadySubscriptionPresetPools(relations);
+        const readyStateMap = await this.buildReadySubscriptionStates(relations, presetPools);
         const hostMap = new Map(hosts.map((host) => [host.uuid, host] as const));
-        const presetUuidSet = new Set(relations.map((relation) => relation.preset.uuid));
-        const presetNodes = await this.prisma.tx.externalVlessNode.findMany({
-            where: {
-                presetUuid: {
-                    in: [...presetUuidSet],
-                },
-            },
-        });
-        const nodesByPreset = new Map<string, ExternalNodeRecord[]>();
-        for (const node of presetNodes) {
-            const list = nodesByPreset.get(node.presetUuid) || [];
-            list.push(node);
-            nodesByPreset.set(node.presetUuid, list);
-        }
 
         return relations.flatMap((relation: ReadySubscriptionRelationRecord) => {
             const host = hostMap.get(relation.hostUuid);
@@ -978,7 +947,7 @@ export class ExternalVlessService implements OnModuleInit {
                 return [];
             }
 
-            const presetPool = nodesByPreset.get(relation.preset.uuid) || [];
+            const presetPool = presetPools.get(relation.preset.uuid) || [];
 
             return readyState.activeNodes.flatMap((node, index) => {
                 const nodeRecord =
@@ -1286,6 +1255,88 @@ export class ExternalVlessService implements OnModuleInit {
         }
 
         return activeNodes.slice(0, relation.activeNodeLimit);
+    }
+
+    private async loadReadySubscriptionPresetPools(
+        relations: ReadySubscriptionRelationRecord[],
+    ): Promise<Map<string, ExternalNodeRecord[]>> {
+        const presetMeta = new Map<
+            string,
+            {
+                activeNodeLimit: number;
+                selectedDedupeKeys: Set<string>;
+            }
+        >();
+
+        for (const relation of relations) {
+            const current = presetMeta.get(relation.preset.uuid) || {
+                activeNodeLimit: 0,
+                selectedDedupeKeys: new Set<string>(),
+            };
+
+            current.activeNodeLimit = Math.max(current.activeNodeLimit, relation.activeNodeLimit);
+
+            for (const node of relation.nodes) {
+                current.selectedDedupeKeys.add(node.dedupeKey);
+            }
+
+            presetMeta.set(relation.preset.uuid, current);
+        }
+
+        const entries = await pMap(
+            [...presetMeta.entries()],
+            async ([presetUuid, meta]) => {
+                const candidateTake = Math.max(
+                    READY_SUBSCRIPTION_REPLACEMENT_POOL_MIN,
+                    Math.min(
+                        READY_SUBSCRIPTION_REPLACEMENT_POOL_MAX,
+                        meta.selectedDedupeKeys.size +
+                            meta.activeNodeLimit * READY_SUBSCRIPTION_REPLACEMENT_POOL_MULTIPLIER,
+                    ),
+                );
+
+                const [selectedNodes, candidateNodes] = await Promise.all([
+                    meta.selectedDedupeKeys.size > 0
+                        ? this.prisma.tx.externalVlessNode.findMany({
+                              where: {
+                                  presetUuid,
+                                  dedupeKey: {
+                                      in: [...meta.selectedDedupeKeys],
+                                  },
+                              },
+                          })
+                        : Promise.resolve([]),
+                    this.prisma.tx.externalVlessNode.findMany({
+                        where: {
+                            presetUuid,
+                            isEnabled: true,
+                        },
+                        orderBy: [
+                            { isPinned: 'desc' },
+                            { isAlive: 'desc' },
+                            { latencyMs: 'asc' },
+                            { priority: 'desc' },
+                            { sourcePosition: 'asc' },
+                        ],
+                        take: candidateTake,
+                    }),
+                ]);
+
+                const byUuid = new Map<string, ExternalNodeRecord>();
+
+                for (const node of [...selectedNodes, ...candidateNodes]) {
+                    byUuid.set(node.uuid, node);
+                }
+
+                return [
+                    presetUuid,
+                    [...byUuid.values()].sort((a, b) => this.compareNodes(a, b)),
+                ] as const;
+            },
+            { concurrency: 4 },
+        );
+
+        return new Map(entries);
     }
 
     private getExternalNodeCountryKey(
