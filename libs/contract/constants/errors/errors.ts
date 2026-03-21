@@ -1104,4 +1104,14 @@ export const ERRORS = {
         message: 'Connected nodes not found',
         httpCode: 404,
     },
+    INVALID_HOST_IMPORT_INPUT: {
+        code: 'A220',
+        message: 'Invalid host import input',
+        httpCode: 400,
+        withMessage: (message: string) => ({
+            code: 'A220',
+            message,
+            httpCode: 400,
+        }),
+    },
 } as const;

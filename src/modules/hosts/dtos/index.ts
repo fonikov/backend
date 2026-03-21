@@ -4,5 +4,6 @@ export * from './delete-host.dto';
 export * from './get-all-host-tags.dto';
 export * from './get-all-hosts.dto';
 export * from './get-one.dto';
+export * from './import-host.dto';
 export * from './reorder-hosts.dto';
 export * from './update-host.dto';

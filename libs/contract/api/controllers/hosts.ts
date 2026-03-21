@@ -10,6 +10,7 @@ export const HOSTS_ROUTES = {
     DELETE: (uuid: string) => `${uuid}`, // delete by UUID
 
     ACTIONS: {
+        IMPORT: `${HOST_ACTIONS_ROUTE}/import`,
         REORDER: `${HOST_ACTIONS_ROUTE}/reorder`,
     },
 

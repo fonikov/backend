@@ -1,8 +1,12 @@
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+
 import { Injectable, Logger } from '@nestjs/common';
 import { QueryBus } from '@nestjs/cqrs';
 
 import { fail, ok, TResult } from '@common/types';
-import { ERRORS } from '@libs/contracts/constants';
+import { ALPN, ERRORS, FINGERPRINTS, SECURITY_LAYERS } from '@libs/contracts/constants';
+import { ImportHostCommand } from '@libs/contracts/commands';
 
 import { GetSubscriptionTemplateByUuidQuery } from '@modules/subscription-template/queries/get-template-by-uuid';
 import { GetConfigProfileByUuidQuery } from '@modules/config-profiles/queries/get-config-profile-by-uuid';
@@ -488,6 +492,29 @@ export class HostsService {
         }
     }
 
+    public async importHostInput(
+        dto: ImportHostCommand.Request,
+    ): Promise<TResult<ImportHostCommand.Response['response']>> {
+        try {
+            const parsed =
+                dto.format === 'VLESS_URI'
+                    ? await this.parseVlessUri(dto.input)
+                    : await this.parseXrayJson(dto.input);
+
+            return ok(parsed);
+        } catch (error) {
+            this.logger.warn(
+                `Failed to import host input: ${error instanceof Error ? error.message : String(error)}`,
+            );
+
+            return fail(
+                ERRORS.INVALID_HOST_IMPORT_INPUT.withMessage(
+                    error instanceof Error ? error.message : 'Failed to import host input',
+                ),
+            );
+        }
+    }
+
     private async resolveInbound(inboundObj: {
         configProfileInboundUuid: string;
         configProfileUuid: string;
@@ -516,6 +543,168 @@ export class HostsService {
             configProfileUuid: configProfile.response.uuid,
             configProfileInboundUuid: configProfileInbound.uuid,
         });
+    }
+
+    private async parseVlessUri(
+        input: string,
+    ): Promise<ImportHostCommand.Response['response']> {
+        const normalized = input.trim();
+        if (!normalized.toLowerCase().startsWith('vless://')) {
+            throw new Error('VLESS URI must start with vless://');
+        }
+
+        const url = new URL(normalized);
+        const params = url.searchParams;
+        const address = await this.resolveHostAddress(url.hostname);
+        const transport = (params.get('type') || 'tcp').toLowerCase().trim();
+        const security = (params.get('security') || 'none').toLowerCase().trim();
+        const host = params.get('host') || params.get('authority');
+        const rawAlpn = params.get('alpn')?.split(',')[0]?.trim() || null;
+        const rawFingerprint =
+            params.get('fp')?.trim() || params.get('fingerprint')?.trim() || null;
+        const insecure = params.get('allowInsecure') || params.get('insecure');
+
+        return {
+            remark: this.decodeRemark(url.hash.replace(/^#/, '')) || null,
+            address,
+            port: Number(url.port || 443),
+            path:
+                transport === 'grpc'
+                    ? params.get('serviceName') || params.get('path') || null
+                    : params.get('path') || null,
+            sni: params.get('sni') || null,
+            host: host || null,
+            alpn: this.parseEnumValue(ALPN, rawAlpn),
+            fingerprint: this.parseEnumValue(FINGERPRINTS, rawFingerprint),
+            allowInsecure: insecure === '1' || insecure === 'true',
+            securityLayer: this.mapSecurityLayer(security),
+        };
+    }
+
+    private async parseXrayJson(
+        input: string,
+    ): Promise<ImportHostCommand.Response['response']> {
+        let parsedConfig: any;
+
+        try {
+            parsedConfig = JSON.parse(input);
+        } catch {
+            throw new Error('Xray JSON is not valid JSON');
+        }
+
+        const vlessOutbound = parsedConfig?.outbounds?.find(
+            (outbound: any) => outbound?.protocol === 'vless',
+        );
+        if (!vlessOutbound) {
+            throw new Error('Xray JSON must contain at least one vless outbound');
+        }
+
+        const vnext = vlessOutbound?.settings?.vnext?.[0];
+        const user = vnext?.users?.[0];
+        const streamSettings = vlessOutbound?.streamSettings || {};
+        const tlsSettings = streamSettings?.tlsSettings || {};
+        const realitySettings = streamSettings?.realitySettings || {};
+        const wsSettings = streamSettings?.wsSettings || {};
+        const grpcSettings = streamSettings?.grpcSettings || {};
+        const httpSettings = streamSettings?.httpSettings || {};
+        const httpupgradeSettings = streamSettings?.httpupgradeSettings || {};
+        const xhttpSettings = streamSettings?.xhttpSettings || {};
+
+        if (!vnext?.address || !vnext?.port || !user?.id) {
+            throw new Error('Xray JSON vless outbound is missing address, port, or user id');
+        }
+
+        const address = await this.resolveHostAddress(String(vnext.address));
+        const security = String(streamSettings?.security || 'none').toLowerCase().trim();
+        const network = String(streamSettings?.network || 'tcp').toLowerCase().trim();
+        const rawAlpn = Array.isArray(tlsSettings?.alpn)
+            ? tlsSettings.alpn[0]
+            : tlsSettings?.alpn || null;
+        const rawFingerprint =
+            realitySettings?.fingerprint || tlsSettings?.fingerprint || null;
+        const hostHeader =
+            wsSettings?.headers?.Host ||
+            httpupgradeSettings?.host ||
+            httpSettings?.host ||
+            xhttpSettings?.host ||
+            null;
+
+        return {
+            remark: typeof parsedConfig?.remarks === 'string' ? parsedConfig.remarks : null,
+            address,
+            port: Number(vnext.port),
+            path:
+                network === 'grpc'
+                    ? grpcSettings?.serviceName || null
+                    : wsSettings?.path ||
+                      httpupgradeSettings?.path ||
+                      xhttpSettings?.path ||
+                      httpSettings?.path ||
+                      null,
+            sni: realitySettings?.serverName || tlsSettings?.serverName || null,
+            host: hostHeader,
+            alpn: this.parseEnumValue(ALPN, typeof rawAlpn === 'string' ? rawAlpn : null),
+            fingerprint: this.parseEnumValue(
+                FINGERPRINTS,
+                typeof rawFingerprint === 'string' ? rawFingerprint : null,
+            ),
+            allowInsecure: Boolean(tlsSettings?.allowInsecure),
+            securityLayer: this.mapSecurityLayer(security),
+        };
+    }
+
+    private async resolveHostAddress(address: string): Promise<string> {
+        const normalizedAddress = address.trim();
+
+        if (!normalizedAddress) {
+            throw new Error('Address is required');
+        }
+
+        if (isIP(normalizedAddress)) {
+            return normalizedAddress;
+        }
+
+        try {
+            const resolved = await lookup(normalizedAddress);
+            return resolved.address;
+        } catch {
+            throw new Error(`Failed to resolve address "${normalizedAddress}" to an IP`);
+        }
+    }
+
+    private mapSecurityLayer(
+        security: string,
+    ): (typeof SECURITY_LAYERS)[keyof typeof SECURITY_LAYERS] {
+        if (security === 'tls') {
+            return SECURITY_LAYERS.TLS;
+        }
+
+        if (security === 'none') {
+            return SECURITY_LAYERS.NONE;
+        }
+
+        return SECURITY_LAYERS.DEFAULT;
+    }
+
+    private parseEnumValue<T extends Record<string, string>>(
+        enumLike: T,
+        value: null | string,
+    ): null | T[keyof T] {
+        if (!value) {
+            return null;
+        }
+
+        return Object.values(enumLike).includes(value as T[keyof T])
+            ? (value as T[keyof T])
+            : null;
+    }
+
+    private decodeRemark(input: string): string {
+        try {
+            return decodeURIComponent(input).trim();
+        } catch {
+            return input.trim();
+        }
     }
 
     private async attachReadySubscriptionData(hosts: HostsEntity[]): Promise<HostsEntity[]> {

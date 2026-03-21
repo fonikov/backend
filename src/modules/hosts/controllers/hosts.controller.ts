@@ -20,6 +20,7 @@ import {
     GetAllHostsCommand,
     GetAllHostTagsCommand,
     GetOneHostCommand,
+    ImportHostCommand,
     ReorderHostCommand,
     UpdateHostCommand,
 } from '@libs/contracts/commands';
@@ -35,6 +36,8 @@ import {
     DeleteHostRequestDto,
     DeleteHostResponseDto,
     GetAllHostsResponseDto,
+    ImportHostRequestDto,
+    ImportHostResponseDto,
     UpdateHostResponseDto,
     UpdateHostRequestDto,
     GetOneHostResponseDto,
@@ -84,6 +87,24 @@ export class HostsController {
         const data = errorHandler(result);
         return {
             response: new HostResponseModel(data),
+        };
+    }
+
+    @ApiOkResponse({
+        type: ImportHostResponseDto,
+        description: 'Host import parsed successfully',
+    })
+    @Endpoint({
+        command: ImportHostCommand,
+        httpCode: HttpStatus.OK,
+        apiBody: ImportHostRequestDto,
+    })
+    async importHost(@Body() body: ImportHostRequestDto): Promise<ImportHostResponseDto> {
+        const result = await this.hostsService.importHostInput(body);
+
+        const data = errorHandler(result);
+        return {
+            response: data,
         };
     }
 
