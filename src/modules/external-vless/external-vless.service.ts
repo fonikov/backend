@@ -182,6 +182,7 @@ type ProbeLatencyResult = {
 const REMOTE_PROBE_BATCH_SIZE = 25;
 const REMOTE_PROBE_BATCH_CONCURRENCY = 4;
 const MAX_PROBED_NODES_PER_SYNC = 2000;
+const EXTERNAL_PRESET_INSERT_BATCH_SIZE = 1000;
 
 const WHITE_SOURCE_URLS = [
     'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt',
@@ -601,54 +602,58 @@ export class ExternalVlessService implements OnModuleInit {
             });
 
             if (probedNodes.length > 0) {
-                await this.prisma.tx.externalVlessNode.createMany({
-                    data: probedNodes.map((node) => {
-                        const existingNode = existingAutoNodeMap.get(node.dedupeKey);
+                const rows = probedNodes.map((node) => {
+                    const existingNode = existingAutoNodeMap.get(node.dedupeKey);
 
-                        return {
-                            address: node.address,
-                            aliasRemark: existingNode?.aliasRemark || null,
-                            alpn: node.alpn || null,
-                            authority: node.authority || null,
-                            countryCode: node.countryCode ?? existingNode?.countryCode ?? null,
-                            countryName: node.countryName ?? existingNode?.countryName ?? null,
-                            credential: node.credential,
-                            customTags: existingNode?.customTags ?? [],
-                            dedupeKey: node.dedupeKey,
-                            displayCountry: node.displayCountry,
-                            encryption: node.encryption || null,
-                            fingerprint: node.fingerprint || null,
-                            flow: node.flow || null,
-                            host: node.host || null,
-                            isAlive: node.isAlive || existingNode?.isAlive || false,
-                            isEnabled: existingNode?.isEnabled ?? true,
-                            isManual: false,
-                            isPinned: existingNode?.isPinned ?? false,
-                            lastCheckedAt: new Date(),
-                            latencyMs: node.latencyMs ?? existingNode?.latencyMs ?? null,
-                            originalRemark: node.originalRemark,
-                            path: node.path || null,
-                            port: node.port,
-                            presetUuid: preset.uuid,
-                            priority: existingNode?.priority ?? 0,
-                            publicKey: node.publicKey || null,
-                            rawUri: node.rawUri,
-                            remarkTags: node.remarkTags,
-                            resolvedAddress: node.resolvedAddress ?? existingNode?.resolvedAddress ?? null,
-                            security: node.security,
-                            serviceName: node.serviceName || null,
-                            shortId: node.shortId || null,
-                            sni: node.sni || null,
-                            sourcePosition: node.sourcePosition,
-                            spiderX: node.spiderX || null,
-                            tcpLatencyMs: node.tcpLatencyMs ?? existingNode?.tcpLatencyMs ?? null,
-                            transportLatencyMs:
-                                node.transportLatencyMs ?? existingNode?.transportLatencyMs ?? null,
-                            transportProbe: node.transportProbe || existingNode?.transportProbe || 'NONE',
-                        };
-                    }),
-                    skipDuplicates: true,
+                    return {
+                        address: node.address,
+                        aliasRemark: existingNode?.aliasRemark || null,
+                        alpn: node.alpn || null,
+                        authority: node.authority || null,
+                        countryCode: node.countryCode ?? existingNode?.countryCode ?? null,
+                        countryName: node.countryName ?? existingNode?.countryName ?? null,
+                        credential: node.credential,
+                        customTags: existingNode?.customTags ?? [],
+                        dedupeKey: node.dedupeKey,
+                        displayCountry: node.displayCountry,
+                        encryption: node.encryption || null,
+                        fingerprint: node.fingerprint || null,
+                        flow: node.flow || null,
+                        host: node.host || null,
+                        isAlive: node.isAlive || existingNode?.isAlive || false,
+                        isEnabled: existingNode?.isEnabled ?? true,
+                        isManual: false,
+                        isPinned: existingNode?.isPinned ?? false,
+                        lastCheckedAt: new Date(),
+                        latencyMs: node.latencyMs ?? existingNode?.latencyMs ?? null,
+                        originalRemark: node.originalRemark,
+                        path: node.path || null,
+                        port: node.port,
+                        presetUuid: preset.uuid,
+                        priority: existingNode?.priority ?? 0,
+                        publicKey: node.publicKey || null,
+                        rawUri: node.rawUri,
+                        remarkTags: node.remarkTags,
+                        resolvedAddress: node.resolvedAddress ?? existingNode?.resolvedAddress ?? null,
+                        security: node.security,
+                        serviceName: node.serviceName || null,
+                        shortId: node.shortId || null,
+                        sni: node.sni || null,
+                        sourcePosition: node.sourcePosition,
+                        spiderX: node.spiderX || null,
+                        tcpLatencyMs: node.tcpLatencyMs ?? existingNode?.tcpLatencyMs ?? null,
+                        transportLatencyMs:
+                            node.transportLatencyMs ?? existingNode?.transportLatencyMs ?? null,
+                        transportProbe: node.transportProbe || existingNode?.transportProbe || 'NONE',
+                    };
                 });
+
+                for (let index = 0; index < rows.length; index += EXTERNAL_PRESET_INSERT_BATCH_SIZE) {
+                    await this.prisma.tx.externalVlessNode.createMany({
+                        data: rows.slice(index, index + EXTERNAL_PRESET_INSERT_BATCH_SIZE),
+                        skipDuplicates: true,
+                    });
+                }
             }
 
             await this.prisma.tx.externalVlessPreset.update({
