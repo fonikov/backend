@@ -1236,8 +1236,15 @@ export class ExternalVlessService implements OnModuleInit {
         node: ExternalNodeRecord,
         index: number,
     ): IFormattedHost {
+        const indexedRemark = this.applyReadyHostIndexTemplate(
+            host.remark,
+            readyState.activeNodes.length,
+            index,
+        );
         const remarkSuffix =
-            readyState.activeNodes.length > 1 ? ` ^~${index + 1}~^` : '';
+            indexedRemark === host.remark && readyState.activeNodes.length > 1
+                ? ` ^~${index + 1}~^`
+                : '';
 
         return {
             address: node.address,
@@ -1272,7 +1279,7 @@ export class ExternalVlessService implements OnModuleInit {
             port: node.port,
             protocol: 'vless',
             publicKey: node.publicKey || '',
-            remark: `${host.remark}${remarkSuffix}`,
+            remark: `${indexedRemark}${remarkSuffix}`,
             serverDescription: host.serverDescription
                 ? Buffer.from(host.serverDescription).toString('base64')
                 : undefined,
@@ -1290,6 +1297,15 @@ export class ExternalVlessService implements OnModuleInit {
             tls: node.security || 'none',
             xHttpExtraParams: host.xHttpExtraParams,
         };
+    }
+
+    private applyReadyHostIndexTemplate(remark: string, totalActiveNodes: number, index: number): string {
+        if (!/#(?:x|х)/i.test(remark)) {
+            return remark;
+        }
+
+        const replacement = totalActiveNodes > 1 ? `#${index + 1}` : '';
+        return remark.replace(/#(?:x|х)/gi, replacement).replace(/\s{2,}/g, ' ').trim();
     }
 
     private getAvailableCountries(nodes: ExternalNodeRecord[]) {
