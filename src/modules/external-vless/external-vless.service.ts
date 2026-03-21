@@ -186,7 +186,7 @@ const WHITE_SOURCE_URLS = [
 ];
 
 const GOIDA_MIRROR_SOURCE_URLS = Array.from(
-    { length: 26 },
+    { length: 25 },
     (_, index) =>
         `https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/githubmirror/${index + 1}.txt`,
 );
@@ -194,12 +194,13 @@ const GOIDA_MIRROR_SOURCE_URLS = Array.from(
 const DEFAULT_PRESETS: ExternalPresetSeed[] = [
     {
         slug: 'auto-black',
-        name: 'Auto server BLACK',
+        name: 'Black List',
         sourceUrls: [
             'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS.txt',
             'https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS_mobile.txt',
+            ...GOIDA_MIRROR_SOURCE_URLS,
         ],
-        includeKeywords: ['BL'],
+        includeKeywords: [],
         requiredSecurity: null,
         selectionLimit: 5,
         countryMode: 'ANY',
@@ -207,33 +208,24 @@ const DEFAULT_PRESETS: ExternalPresetSeed[] = [
     },
     {
         slug: 'auto-white-ru-ip',
-        name: 'Auto server White List with RU IP',
+        name: 'White List',
         sourceUrls: WHITE_SOURCE_URLS,
         includeKeywords: [],
         requiredSecurity: 'reality',
         selectionLimit: 5,
-        countryMode: 'RU_ONLY',
-        uniqueCountries: false,
-    },
-    {
-        slug: 'auto-white-foreign-ip',
-        name: 'Auto server White List with Foreign IP',
-        sourceUrls: WHITE_SOURCE_URLS,
-        includeKeywords: [],
-        requiredSecurity: 'reality',
-        selectionLimit: 5,
-        countryMode: 'NON_RU_ONLY',
-        uniqueCountries: false,
-    },
-    {
-        slug: 'mirror-mixed-hub',
-        name: 'Mirror Mixed Hub',
-        sourceUrls: GOIDA_MIRROR_SOURCE_URLS,
-        includeKeywords: [],
-        requiredSecurity: null,
-        selectionLimit: 50,
         countryMode: 'ANY',
         uniqueCountries: false,
+    },
+];
+
+const LEGACY_PRESET_MIGRATIONS = [
+    {
+        from: 'mirror-mixed-hub',
+        to: 'auto-black',
+    },
+    {
+        from: 'auto-white-foreign-ip',
+        to: 'auto-white-ru-ip',
     },
 ];
 
@@ -288,6 +280,83 @@ export class ExternalVlessService implements OnModuleInit {
                 },
             });
         }
+
+        for (const migration of LEGACY_PRESET_MIGRATIONS) {
+            await this.mergeLegacyPresetInto(migration.from, migration.to);
+        }
+    }
+
+    private async mergeLegacyPresetInto(fromSlug: string, toSlug: string): Promise<void> {
+        if (fromSlug === toSlug) {
+            return;
+        }
+
+        const [legacyPreset, targetPreset] = await Promise.all([
+            this.prisma.tx.externalVlessPreset.findUnique({ where: { slug: fromSlug } }),
+            this.prisma.tx.externalVlessPreset.findUnique({ where: { slug: toSlug } }),
+        ]);
+
+        if (!legacyPreset || !targetPreset) {
+            return;
+        }
+
+        await this.prisma.withTransaction(async () => {
+            await this.prisma.tx.readySubscriptionHost.updateMany({
+                where: { presetUuid: legacyPreset.uuid },
+                data: { presetUuid: targetPreset.uuid },
+            });
+
+            const legacyManualNodes = await this.prisma.tx.externalVlessNode.findMany({
+                where: {
+                    presetUuid: legacyPreset.uuid,
+                    isManual: true,
+                },
+            });
+
+            for (const legacyNode of legacyManualNodes) {
+                const existingTargetNode = await this.prisma.tx.externalVlessNode.findFirst({
+                    where: {
+                        presetUuid: targetPreset.uuid,
+                        dedupeKey: legacyNode.dedupeKey,
+                    },
+                });
+
+                if (existingTargetNode) {
+                    await this.prisma.tx.externalVlessNode.update({
+                        where: { uuid: existingTargetNode.uuid },
+                        data: {
+                            aliasRemark: legacyNode.aliasRemark || existingTargetNode.aliasRemark,
+                            customTags:
+                                legacyNode.customTags.length > 0
+                                    ? legacyNode.customTags
+                                    : existingTargetNode.customTags,
+                            isEnabled: legacyNode.isEnabled,
+                            isManual: existingTargetNode.isManual || legacyNode.isManual,
+                            isPinned: existingTargetNode.isPinned || legacyNode.isPinned,
+                            priority: Math.max(existingTargetNode.priority, legacyNode.priority),
+                        },
+                    });
+
+                    await this.prisma.tx.externalVlessNode.delete({
+                        where: { uuid: legacyNode.uuid },
+                    });
+                    continue;
+                }
+
+                await this.prisma.tx.externalVlessNode.update({
+                    where: { uuid: legacyNode.uuid },
+                    data: { presetUuid: targetPreset.uuid },
+                });
+            }
+
+            await this.prisma.tx.externalVlessNode.deleteMany({
+                where: { presetUuid: legacyPreset.uuid },
+            });
+
+            await this.prisma.tx.externalVlessPreset.delete({
+                where: { uuid: legacyPreset.uuid },
+            });
+        });
     }
 
     public async getPresetsWithNodes() {
@@ -1343,11 +1412,7 @@ export class ExternalVlessService implements OnModuleInit {
             case 'auto-black':
                 return ['BLACK'];
             case 'auto-white-ru-ip':
-                return ['WHITE-RU'];
-            case 'auto-white-foreign-ip':
-                return ['WHITE-FOREIGN'];
-            case 'mirror-mixed-hub':
-                return ['MIRROR'];
+                return ['WHITE'];
             default:
                 return ['EXTERNAL'];
         }
