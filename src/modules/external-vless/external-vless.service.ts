@@ -1503,9 +1503,18 @@ export class ExternalVlessService implements OnModuleInit {
         requiredSecurity: null | string,
         sourceOffset: number,
     ): ParsedExternalVless[] {
-        return this.expandSourcePayloads(source)
+        let invalidUriCount = 0;
+
+        const parsedNodes = this.expandSourcePayloads(source)
             .flatMap((payload) => this.extractVlessUris(payload))
-            .map((line, index) => this.parseSingleUri(line, sourceOffset + index))
+            .flatMap((line, index) => {
+                try {
+                    return [this.parseSingleUri(line, sourceOffset + index)];
+                } catch {
+                    invalidUriCount += 1;
+                    return [];
+                }
+            })
             .filter((node) => {
                 if (requiredSecurity && node.security !== requiredSecurity) {
                     return false;
@@ -1519,6 +1528,14 @@ export class ExternalVlessService implements OnModuleInit {
                     node.remarkTags.includes(keyword.toUpperCase()),
                 );
             });
+
+        if (invalidUriCount > 0) {
+            this.logger.warn(
+                `Skipped ${invalidUriCount} malformed external VLESS URIs during source parsing`,
+            );
+        }
+
+        return parsedNodes;
     }
 
     private expandSourcePayloads(source: string): string[] {
