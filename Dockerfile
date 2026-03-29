@@ -6,8 +6,10 @@ ARG FRONTEND_URL=https://github.com/remnawave/frontend/releases/latest/download/
 ARG FRONTEND_SOURCE_REPO=
 ARG FRONTEND_SOURCE_REF=main
 ARG FRONTEND_NODE_OPTIONS=--max-old-space-size=4096
+ARG FRONTEND_DISABLE_WEBFONT_DOWNLOAD=1
 
 ENV NODE_OPTIONS=${FRONTEND_NODE_OPTIONS}
+ENV DISABLE_WEBFONT_DOWNLOAD=${FRONTEND_DISABLE_WEBFONT_DOWNLOAD}
 
 RUN apk add --no-cache curl unzip git ca-certificates \
     && if [ -n "${FRONTEND_SOURCE_REPO}" ]; then \
