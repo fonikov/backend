@@ -5,6 +5,9 @@ ARG BRANCH=main
 ARG FRONTEND_URL=https://github.com/remnawave/frontend/releases/latest/download/remnawave-frontend.zip
 ARG FRONTEND_SOURCE_REPO=
 ARG FRONTEND_SOURCE_REF=main
+ARG FRONTEND_NODE_OPTIONS=--max-old-space-size=4096
+
+ENV NODE_OPTIONS=${FRONTEND_NODE_OPTIONS}
 
 RUN apk add --no-cache curl unzip git ca-certificates \
     && if [ -n "${FRONTEND_SOURCE_REPO}" ]; then \
