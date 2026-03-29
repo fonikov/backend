@@ -597,6 +597,7 @@ export class ExternalVlessService implements OnModuleInit {
                 isPinned: true,
                 latencyMs: true,
                 priority: true,
+                rawUri: true,
                 resolvedAddress: true,
                 tcpLatencyMs: true,
                 transportLatencyMs: true,
@@ -606,8 +607,92 @@ export class ExternalVlessService implements OnModuleInit {
         const existingAutoNodeMap = new Map(
             existingAutoNodes.map((node) => [node.dedupeKey, node] as const),
         );
+        const existingAutoNodeByRawUri = new Map(
+            existingAutoNodes.map((node) => [node.rawUri, node] as const),
+        );
+        const nextDedupeKeyByRawUri = new Map(
+            probedNodes.map((node) => [node.rawUri, node.dedupeKey] as const),
+        );
+        const remappedAutoDedupeKeys = new Map<string, string>();
+
+        for (const node of existingAutoNodes) {
+            const nextDedupeKey = nextDedupeKeyByRawUri.get(node.rawUri);
+
+            if (nextDedupeKey && nextDedupeKey !== node.dedupeKey) {
+                remappedAutoDedupeKeys.set(node.dedupeKey, nextDedupeKey);
+            }
+        }
 
         await this.prisma.withTransaction(async () => {
+            if (remappedAutoDedupeKeys.size > 0) {
+                const readySubscriptionHosts = await this.prisma.tx.readySubscriptionHost.findMany({
+                    where: {
+                        presetUuid: preset.uuid,
+                    },
+                    include: {
+                        nodes: {
+                            orderBy: {
+                                viewPosition: 'asc',
+                            },
+                        },
+                    },
+                });
+
+                for (const relation of readySubscriptionHosts) {
+                    let hasRemappedSelection = false;
+                    const normalizedNodes: {
+                        dedupeKey: string;
+                        isPinned: boolean;
+                    }[] = [];
+
+                    for (const node of relation.nodes) {
+                        const nextDedupeKey =
+                            remappedAutoDedupeKeys.get(node.dedupeKey) || node.dedupeKey;
+
+                        if (nextDedupeKey !== node.dedupeKey) {
+                            hasRemappedSelection = true;
+                        }
+
+                        const existingNormalizedNode = normalizedNodes.find(
+                            (normalizedNode) => normalizedNode.dedupeKey === nextDedupeKey,
+                        );
+
+                        if (existingNormalizedNode) {
+                            existingNormalizedNode.isPinned =
+                                existingNormalizedNode.isPinned || node.isPinned;
+                            hasRemappedSelection = true;
+                            continue;
+                        }
+
+                        normalizedNodes.push({
+                            dedupeKey: nextDedupeKey,
+                            isPinned: node.isPinned,
+                        });
+                    }
+
+                    if (!hasRemappedSelection) {
+                        continue;
+                    }
+
+                    await this.prisma.tx.readySubscriptionHostNode.deleteMany({
+                        where: {
+                            hostUuid: relation.hostUuid,
+                        },
+                    });
+
+                    if (normalizedNodes.length > 0) {
+                        await this.prisma.tx.readySubscriptionHostNode.createMany({
+                            data: normalizedNodes.map((node, index) => ({
+                                hostUuid: relation.hostUuid,
+                                dedupeKey: node.dedupeKey,
+                                isPinned: node.isPinned,
+                                viewPosition: index + 1,
+                            })),
+                        });
+                    }
+                }
+            }
+
             await this.prisma.tx.externalVlessNode.deleteMany({
                 where: {
                     isManual: false,
@@ -617,7 +702,9 @@ export class ExternalVlessService implements OnModuleInit {
 
             if (probedNodes.length > 0) {
                 const rows = probedNodes.map((node) => {
-                    const existingNode = existingAutoNodeMap.get(node.dedupeKey);
+                    const existingNode =
+                        existingAutoNodeMap.get(node.dedupeKey) ||
+                        existingAutoNodeByRawUri.get(node.rawUri);
 
                     return {
                         address: node.address,
@@ -1656,15 +1743,25 @@ export class ExternalVlessService implements OnModuleInit {
         const authority = params.get('authority') || '';
         const credential = decodeURIComponent(url.username);
         const security = this.normalizeSecurity(params.get('security'));
+        const alpn = params.get('alpn') || '';
+        const encryption = params.get('encryption') || 'none';
+        const fingerprint = params.get('fp') || params.get('fingerprint') || '';
+        const flow = params.get('flow') === 'xtls-rprx-vision' ? 'xtls-rprx-vision' : '';
+        const spiderX = params.get('spx') || params.get('spiderX') || '';
 
         return {
             address: url.hostname,
-            alpn: params.get('alpn') || '',
+            alpn,
             authority: authority || null,
             credential,
-            dedupeKey: this.createDedupeKey({
+            dedupeKey: this.createExternalNodeDedupeKey({
                 address: url.hostname,
+                alpn,
+                authority,
                 credential,
+                encryption,
+                fingerprint,
+                flow,
                 host,
                 network,
                 path,
@@ -1674,11 +1771,12 @@ export class ExternalVlessService implements OnModuleInit {
                 serviceName,
                 shortId,
                 sni,
+                spiderX,
             }),
             displayCountry: this.parseDisplayCountry(decodedRemark),
-            encryption: params.get('encryption') || 'none',
-            fingerprint: params.get('fp') || params.get('fingerprint') || '',
-            flow: params.get('flow') === 'xtls-rprx-vision' ? 'xtls-rprx-vision' : '',
+            encryption,
+            fingerprint,
+            flow,
             host,
             network,
             originalRemark: decodedRemark,
@@ -1692,7 +1790,7 @@ export class ExternalVlessService implements OnModuleInit {
             shortId,
             sni,
             sourcePosition,
-            spiderX: params.get('spx') || params.get('spiderX') || '',
+            spiderX,
         };
     }
 
@@ -1934,6 +2032,46 @@ export class ExternalVlessService implements OnModuleInit {
         const hash = createHash('sha256');
         hash.update(JSON.stringify(input));
         return hash.digest('hex');
+    }
+
+    private createExternalNodeDedupeKey(input: {
+        address: string;
+        alpn: string;
+        authority: string;
+        credential: string;
+        encryption: string;
+        fingerprint: string;
+        flow: '' | 'xtls-rprx-vision';
+        host: string;
+        network: string;
+        path: string;
+        port: number;
+        publicKey: string;
+        security: string;
+        serviceName: string;
+        shortId: string;
+        sni: string;
+        spiderX: string;
+    }): string {
+        return this.createDedupeKey({
+            address: input.address,
+            alpn: input.alpn,
+            authority: input.authority,
+            credential: input.credential,
+            encryption: input.encryption,
+            fingerprint: input.fingerprint,
+            flow: input.flow,
+            host: input.host,
+            network: input.network,
+            path: input.path,
+            port: input.port,
+            publicKey: input.publicKey,
+            security: input.security,
+            serviceName: input.serviceName,
+            shortId: input.shortId,
+            sni: input.sni,
+            spiderX: input.spiderX,
+        });
     }
 
     private decodeRemark(input: string): string {

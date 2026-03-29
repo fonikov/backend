@@ -275,7 +275,7 @@ export class XrayGeneratorService {
         return Object.fromEntries(
             Object.entries(payload)
                 /* eslint-disable @typescript-eslint/no-unused-vars */
-                .filter(([_, v]) => v !== undefined)
+                .filter(([_, v]) => v !== undefined && v !== null && v !== '')
                 .map(([k, v]) => [k, String(v)]),
         );
     }
