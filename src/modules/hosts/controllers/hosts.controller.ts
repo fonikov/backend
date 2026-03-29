@@ -21,7 +21,6 @@ import {
     GetAllHostTagsCommand,
     GetOneHostCommand,
     ImportHostCommand,
-    ImportHostsFromVlessSubscriptionCommand,
     ReorderHostCommand,
     UpdateHostCommand,
 } from '@libs/contracts/commands';
@@ -39,8 +38,6 @@ import {
     GetAllHostsResponseDto,
     ImportHostRequestDto,
     ImportHostResponseDto,
-    ImportHostsFromVlessSubscriptionRequestDto,
-    ImportHostsFromVlessSubscriptionResponseDto,
     UpdateHostResponseDto,
     UpdateHostRequestDto,
     GetOneHostResponseDto,
@@ -104,26 +101,6 @@ export class HostsController {
     })
     async importHost(@Body() body: ImportHostRequestDto): Promise<ImportHostResponseDto> {
         const result = await this.hostsService.importHostInput(body);
-
-        const data = errorHandler(result);
-        return {
-            response: data,
-        };
-    }
-
-    @ApiOkResponse({
-        type: ImportHostsFromVlessSubscriptionResponseDto,
-        description: 'Hosts imported successfully from VLESS subscription input',
-    })
-    @Endpoint({
-        command: ImportHostsFromVlessSubscriptionCommand,
-        httpCode: HttpStatus.OK,
-        apiBody: ImportHostsFromVlessSubscriptionRequestDto,
-    })
-    async importHostsFromVlessSubscription(
-        @Body() body: ImportHostsFromVlessSubscriptionRequestDto,
-    ): Promise<ImportHostsFromVlessSubscriptionResponseDto> {
-        const result = await this.hostsService.importHostsFromVlessSubscription(body);
 
         const data = errorHandler(result);
         return {
