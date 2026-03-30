@@ -36,6 +36,7 @@ type ParsedExternalVless = {
     fingerprint: string;
     flow: '' | 'xtls-rprx-vision';
     host: string;
+    mode: string;
     network: string;
     originalRemark: string;
     path: string;
@@ -158,6 +159,24 @@ type ProbeTarget = {
     security?: null | string;
     shortId?: null | string;
     sni?: null | string;
+};
+
+type RuntimeTransport = {
+    alpn: string;
+    authority: string;
+    encryption: string;
+    fingerprint: string;
+    flow: '' | 'xtls-rprx-vision';
+    host: string;
+    mode: string;
+    network: string;
+    path: string;
+    publicKey: string;
+    security: string;
+    serviceName: string;
+    shortId: string;
+    sni: string;
+    spiderX: string;
 };
 
 type NodeHealth = {
@@ -462,18 +481,43 @@ export class ExternalVlessService implements OnModuleInit {
             },
             select: {
                 address: true,
+                alpn: true,
                 authority: true,
+                fingerprint: true,
                 host: true,
                 network: true,
                 path: true,
                 port: true,
+                publicKey: true,
+                rawUri: true,
                 security: true,
+                shortId: true,
                 sni: true,
+                sourcePosition: true,
                 uuid: true,
             },
         });
 
-        const healthChecks = await this.getNodeHealthBatch(nodes);
+        const healthChecks = await this.getNodeHealthBatch(
+            nodes.map((node) => {
+                const runtimeTransport = this.getRuntimeTransport(node as ExternalNodeRecord);
+
+                return {
+                    address: node.address,
+                    alpn: runtimeTransport.alpn || null,
+                    authority: runtimeTransport.authority || null,
+                    fingerprint: runtimeTransport.fingerprint || null,
+                    host: runtimeTransport.host || null,
+                    network: runtimeTransport.network,
+                    path: runtimeTransport.path || null,
+                    port: node.port,
+                    publicKey: runtimeTransport.publicKey || null,
+                    security: runtimeTransport.security,
+                    shortId: runtimeTransport.shortId || null,
+                    sni: runtimeTransport.sni || null,
+                };
+            }),
+        );
 
         await pMap(
             nodes,
@@ -1181,30 +1225,41 @@ export class ExternalVlessService implements OnModuleInit {
     }
 
     private toFormattedHost(presetName: string, node: ExternalNodeRecord): IFormattedHost {
+        const runtimeTransport = this.getRuntimeTransport(node);
+
         return {
             address: node.address,
-            alpn: node.alpn || '',
-            encryption: node.encryption || 'none',
-            fingerprint: node.fingerprint || 'chrome',
-            flow: node.flow === 'xtls-rprx-vision' ? 'xtls-rprx-vision' : '',
-            host: node.host || node.authority || '',
-            network: node.network as IFormattedHost['network'],
+            alpn: runtimeTransport.alpn,
+            additionalParams:
+                runtimeTransport.network === 'xhttp'
+                    ? { mode: runtimeTransport.mode || 'auto' }
+                    : runtimeTransport.network === 'grpc'
+                      ? { grpcMultiMode: runtimeTransport.mode === 'multi' }
+                      : undefined,
+            encryption: runtimeTransport.encryption || 'none',
+            fingerprint: runtimeTransport.fingerprint || 'chrome',
+            flow: runtimeTransport.flow === 'xtls-rprx-vision' ? 'xtls-rprx-vision' : '',
+            host: runtimeTransport.host || runtimeTransport.authority || '',
+            network: runtimeTransport.network as IFormattedHost['network'],
             password: {
                 ssPassword: '',
                 trojanPassword: '',
                 vlessPassword: node.credential,
             },
-            path: node.network === 'grpc' ? node.serviceName || '' : node.path || '',
+            path:
+                runtimeTransport.network === 'grpc'
+                    ? runtimeTransport.serviceName || ''
+                    : runtimeTransport.path || '',
             port: node.port,
             protocol: 'vless',
-            publicKey: node.publicKey || '',
+            publicKey: runtimeTransport.publicKey || '',
             remark:
                 node.aliasRemark ||
                 `${presetName} / ${node.displayCountry || node.countryCode || 'AUTO'} / ${node.originalRemark}`,
-            shortId: node.shortId || '',
-            sni: node.sni || '',
-            spiderX: node.spiderX || '',
-            tls: node.security || 'none',
+            shortId: runtimeTransport.shortId || '',
+            sni: runtimeTransport.sni || '',
+            spiderX: runtimeTransport.spiderX || '',
+            tls: runtimeTransport.security || 'none',
             serviceInfo: {
                 excludeFromSubscriptionTypes: [],
                 isHidden: false,
@@ -1488,6 +1543,7 @@ export class ExternalVlessService implements OnModuleInit {
         node: ExternalNodeRecord,
         index: number,
     ): IFormattedHost {
+        const runtimeTransport = this.getRuntimeTransport(node);
         const indexedRemark = this.applyReadyHostIndexTemplateSafe(
             host.remark,
             readyState.activeNodes.length,
@@ -1500,8 +1556,14 @@ export class ExternalVlessService implements OnModuleInit {
 
         return {
             address: node.address,
-            alpn: node.alpn || '',
+            alpn: runtimeTransport.alpn || '',
             allowInsecure: host.allowInsecure,
+            additionalParams:
+                runtimeTransport.network === 'xhttp'
+                    ? { mode: runtimeTransport.mode || 'auto' }
+                    : runtimeTransport.network === 'grpc'
+                      ? { grpcMultiMode: runtimeTransport.mode === 'multi' }
+                      : undefined,
             dbData: {
                 rawInbound: null,
                 inboundTag: 'ready-subscription',
@@ -1515,22 +1577,25 @@ export class ExternalVlessService implements OnModuleInit {
                 tag: host.tag,
                 vlessRouteId: host.vlessRouteId,
             },
-            encryption: node.encryption || 'none',
-            fingerprint: node.fingerprint || 'chrome',
-            flow: node.flow === 'xtls-rprx-vision' ? 'xtls-rprx-vision' : '',
-            host: node.host || node.authority || '',
+            encryption: runtimeTransport.encryption || 'none',
+            fingerprint: runtimeTransport.fingerprint || 'chrome',
+            flow: runtimeTransport.flow === 'xtls-rprx-vision' ? 'xtls-rprx-vision' : '',
+            host: runtimeTransport.host || runtimeTransport.authority || '',
             mihomoX25519: host.mihomoX25519,
             muxParams: host.muxParams,
-            network: node.network as IFormattedHost['network'],
+            network: runtimeTransport.network as IFormattedHost['network'],
             password: {
                 ssPassword: '',
                 trojanPassword: '',
                 vlessPassword: node.credential,
             },
-            path: node.network === 'grpc' ? node.serviceName || '' : node.path || '',
+            path:
+                runtimeTransport.network === 'grpc'
+                    ? runtimeTransport.serviceName || ''
+                    : runtimeTransport.path || '',
             port: node.port,
             protocol: 'vless',
-            publicKey: node.publicKey || '',
+            publicKey: runtimeTransport.publicKey || '',
             remark: `${indexedRemark}${remarkSuffix}`,
             serverDescription: host.serverDescription
                 ? Buffer.from(host.serverDescription).toString('base64')
@@ -1541,12 +1606,12 @@ export class ExternalVlessService implements OnModuleInit {
                 tag: host.tag,
                 excludeFromSubscriptionTypes: host.excludeFromSubscriptionTypes,
             },
-            shortId: node.shortId || '',
+            shortId: runtimeTransport.shortId || '',
             shuffleHost: host.shuffleHost,
-            sni: node.sni || '',
+            sni: runtimeTransport.sni || '',
             sockoptParams: host.sockoptParams,
-            spiderX: node.spiderX || '',
-            tls: node.security || 'none',
+            spiderX: runtimeTransport.spiderX || '',
+            tls: runtimeTransport.security || 'none',
             xHttpExtraParams: host.xHttpExtraParams,
         };
     }
@@ -1595,10 +1660,13 @@ export class ExternalVlessService implements OnModuleInit {
         );
     }
 
-    private getBridgeLabel(node: Pick<ExternalNodeRecord, 'network' | 'remarkTags' | 'security'>): string {
+    private getBridgeLabel(
+        node: Pick<ExternalNodeRecord, 'network' | 'rawUri' | 'remarkTags' | 'security' | 'sourcePosition'>,
+    ): string {
+        const network = this.getRuntimeTransport(node as ExternalNodeRecord).network;
         const parts = [
             node.security !== 'none' ? node.security.toUpperCase() : null,
-            node.network ? node.network.toUpperCase() : null,
+            network ? network.toUpperCase() : null,
             node.remarkTags[0] || null,
         ].filter(Boolean);
 
@@ -1630,6 +1698,48 @@ export class ExternalVlessService implements OnModuleInit {
 
     private normalizeTagList(tags: string[]): string[] {
         return [...new Set(tags.map((tag) => tag.trim().toUpperCase()).filter(Boolean))];
+    }
+
+    private getRuntimeTransport(node: ExternalNodeRecord): RuntimeTransport {
+        try {
+            const parsed = this.parseSingleUri(node.rawUri, node.sourcePosition);
+
+            return {
+                alpn: parsed.alpn,
+                authority: parsed.authority || '',
+                encryption: parsed.encryption,
+                fingerprint: parsed.fingerprint,
+                flow: parsed.flow,
+                host: parsed.host,
+                mode: parsed.mode,
+                network: parsed.network,
+                path: parsed.path,
+                publicKey: parsed.publicKey,
+                security: parsed.security,
+                serviceName: parsed.serviceName,
+                shortId: parsed.shortId,
+                sni: parsed.sni,
+                spiderX: parsed.spiderX,
+            };
+        } catch {
+            return {
+                alpn: node.alpn || '',
+                authority: node.authority || '',
+                encryption: node.encryption || 'none',
+                fingerprint: node.fingerprint || '',
+                flow: node.flow === 'xtls-rprx-vision' ? 'xtls-rprx-vision' : '',
+                host: node.host || '',
+                mode: '',
+                network: node.network || 'tcp',
+                path: node.path || '',
+                publicKey: node.publicKey || '',
+                security: node.security || 'none',
+                serviceName: node.serviceName || '',
+                shortId: node.shortId || '',
+                sni: node.sni || '',
+                spiderX: node.spiderX || '',
+            };
+        }
     }
 
     private dedupeNodes(nodes: ParsedExternalVless[]): ParsedExternalVless[] {
@@ -1734,6 +1844,7 @@ export class ExternalVlessService implements OnModuleInit {
         const params = url.searchParams;
         const decodedRemark = this.decodeRemark(url.hash.replace(/^#/, ''));
         const host = params.get('host') || '';
+        const mode = params.get('mode') || '';
         const network = this.normalizeNetwork(params.get('type'));
         const path = params.get('path') || '';
         const publicKey = params.get('pbk') || '';
@@ -1778,6 +1889,7 @@ export class ExternalVlessService implements OnModuleInit {
             fingerprint,
             flow,
             host,
+            mode,
             network,
             originalRemark: decodedRemark,
             path,
